@@ -8,13 +8,16 @@
 
 ## 導入
 
-WebProxiedのサーバーの画面に表示されるトークンを使います。
+WebProxiedのサーバーの画面に表示されるコマンドを実行し、表示されたトークンを貼り付けます（トークンは、コマンドの履歴やプロセスの一覧に残らないよう、実行中に入力します）。
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/cloud-guild/webproxied-agent/main/packaging/install.sh | sudo sh -s -- --token <トークン>
+curl -fsSL https://webproxied.com/agent/install.sh | sudo sh -s -- --api-url https://webproxied.com
 ```
 
+- 導入スクリプトは、WebProxiedのドメインから配布します（このリポジトリの `packaging/install.sh` と同じ内容）。
+- 入れ直し（トークンの作り直し・版の更新）でも、同じコマンドを実行します。
 - 実行ファイルは GitHub Releases から取得し、当社の署名（ed25519）を検証してから入れます（OpenSSL 3.0以降が必要です）。
+- OpenSSL 3.0より古いサーバー（Amazon Linux 2・RHEL 8など）では、署名を検証できません。別のマシンで署名を検証したうえで、`--skip-signature-check` を付けて実行してください。
 - 専用のユーザー `webproxied-agent` で動きます。実行ファイルは `/opt/webproxied-agent/`、設定は `/etc/webproxied-agent/agent.conf` です。
 
 ## 自動更新
@@ -35,7 +38,7 @@ sudo userdel webproxied-agent
 ## リリース（開発者向け）
 
 1. `v1.2.3` の形のタグを付けて push すると、GitHub Actionsが実行ファイルと `checksums.txt` を作り、下書きのリリースにします。
-2. 秘密鍵を持つ人が、手元で `sh scripts/sign-release.sh v1.2.3 <秘密鍵>` を実行して署名を添付し、公開します。
+2. 秘密鍵を持つ人が、手元で `sh scripts/sign-release.sh v1.2.3 <秘密鍵>` を実行します。手元で同じ版を作り直してハッシュが一致することを確かめてから、署名を添付して公開します。
 3. 鍵の作り方は `scripts/gen-key.sh`（公開鍵を `internal/update/keys/release.pub` と `packaging/install.sh` に入れる）。
 
 ## 開発

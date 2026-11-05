@@ -23,7 +23,11 @@ func TestParseDefaultsAndErrors(t *testing.T) {
 		t.Fatalf("defaults: %+v %v", cfg, err)
 	}
 
-	for _, input := range []string{"API_URL=https://example.com\n", "TOKEN=t\nAPI_URL=ftp://x\n", "TOKEN=t\nAPI_URL=https://x\nINTERVAL_SECONDS=5\n", "garbage\n"} {
+	if _, err := Parse(strings.NewReader("API_URL=http://localhost:8080\nTOKEN=t\nALLOW_INSECURE_HTTP=true\n")); err != nil {
+		t.Fatalf("開発用のhttpを許せない: %v", err)
+	}
+
+	for _, input := range []string{"API_URL=https://example.com\n", "TOKEN=t\nAPI_URL=http://example.com\n", "TOKEN=t\nAPI_URL=ftp://x\n", "TOKEN=t\nAPI_URL=https://x\nINTERVAL_SECONDS=5\n", "garbage\n"} {
 		if _, err := Parse(strings.NewReader(input)); err == nil {
 			t.Fatalf("expected error for %q", input)
 		}

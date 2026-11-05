@@ -2,6 +2,7 @@ name: release
 
 # v1.2.3 の形のタグを付けると、実行ファイルとchecksums.txtを作り、下書きのリリースにする。
 # 署名（checksums.txt.sig）は、秘密鍵を持つ人が手元で scripts/sign-release.sh を実行して添付し、公開する（GitHubに秘密鍵を置かない）。
+# sign-release.sh は、手元で同じ版を作り直し、ハッシュが一致することを確かめてから署名する（ビルドの環境が乗っ取られても、署名しない）。
 on:
   push:
     tags: ['v*.*.*']
@@ -13,8 +14,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
       - run: go vet ./... && go test ./...
@@ -22,9 +23,10 @@ jobs:
         run: |
           mkdir -p dist
           for arch in amd64 arm64; do
-            CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" -o dist/webproxied-agent_linux_$arch ./cmd/webproxied-agent
+            CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -buildvcs=false -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" -o dist/webproxied-agent_linux_$arch ./cmd/webproxied-agent
           done
-          (cd dist && sha256sum webproxied-agent_linux_* > checksums.txt)
+          # 1行目に版を入れる（署名は版も含む。古い正しい版を、新しいタグで配り直されても、エージェントが見分ける）
+          (cd dist && { echo "version: ${GITHUB_REF_NAME}"; sha256sum webproxied-agent_linux_*; } > checksums.txt)
       - name: draft release
         env:
           GH_TOKEN: ${{ github.token }}

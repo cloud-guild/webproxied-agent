@@ -8,7 +8,7 @@ Wants=network-online.target
 User=webproxied-agent
 Group=webproxied-agent
 ExecStart=/opt/webproxied-agent/webproxied-agent run
-# 自動更新で実行ファイルを置き換えたら、終了して再起動する
+# 自動更新で実行ファイルを置き換えたら、終了して再起動する（更新した版が送信に成功しなければ、3回目の起動で元の版へ戻す）
 Restart=always
 RestartSec=10
 # 読み取りだけを行う。書き込めるのは、エージェントの実行ファイルの場所だけ
@@ -16,6 +16,13 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
 ReadWritePaths=/opt/webproxied-agent
 
 [Install]

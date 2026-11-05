@@ -35,7 +35,11 @@ func (ErrUnauthorized) Error() string {
 
 // New は、クライアントを作る。
 func New(apiURL, token, userAgent string) *Client {
-	return &Client{APIURL: apiURL, Token: token, UserAgent: userAgent, HTTP: &http.Client{Timeout: 30 * time.Second}}
+	// 転送は辿らない（トークンを別の宛先へ送らない）
+	return &Client{APIURL: apiURL, Token: token, UserAgent: userAgent, HTTP: &http.Client{
+		Timeout:       30 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}}
 }
 
 // Report は、データを送る。

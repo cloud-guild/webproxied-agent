@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"math/rand/v2"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -101,6 +100,14 @@ func run(path string) int {
 		return 1
 	}
 
+	// 更新した版が、続けて送信に失敗していたら、元の版へ戻す
+	if rolledBack, err := update.CheckRollback(); err != nil {
+		log.Printf("元の版へ戻せませんでした: %v", err)
+	} else if rolledBack {
+		log.Print("更新した版が送信に成功しないため、元の版へ戻しました。再起動します")
+		return 1
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -126,6 +133,7 @@ func run(path string) int {
 		switch {
 		case err == nil:
 			failures = 0
+			update.ConfirmHealthy()
 			if res.IntervalSeconds >= 30 {
 				interval = time.Duration(res.IntervalSeconds) * time.Second
 			}
@@ -140,7 +148,7 @@ func run(path string) int {
 
 		if autoUpdate && time.Since(lastUpdateCheck) >= updateInterval {
 			lastUpdateCheck = time.Now()
-			if updated, err := update.Apply(ctx, &http.Client{Timeout: 2 * time.Minute}, version); err != nil {
+			if updated, err := update.Apply(ctx, update.HTTPClient(), version); err != nil {
 				log.Printf("自動更新しませんでした: %v", err)
 			} else if updated {
 				log.Print("新しい版へ更新しました。再起動します")
@@ -159,7 +167,7 @@ func run(path string) int {
 
 // manualUpdate は、今すぐ新しい版を確かめて更新する。
 func manualUpdate() int {
-	updated, err := update.Apply(context.Background(), &http.Client{Timeout: 2 * time.Minute}, version)
+	updated, err := update.Apply(context.Background(), update.HTTPClient(), version)
 	switch {
 	case err != nil:
 		log.Printf("更新しませんでした: %v", err)

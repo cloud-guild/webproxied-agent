@@ -1,11 +1,14 @@
 #!/bin/sh
-# WebProxied Agent の導入スクリプト。
-#   curl -fsSL https://raw.githubusercontent.com/cloud-guild/webproxied-agent/main/packaging/install.sh | sudo sh -s -- --token <トークン> [--api-url https://webproxied.com]
+# WebProxied Agent の導入スクリプト（WebProxiedのサーバーの画面に表示されるコマンドで実行する）。
+#   curl -fsSL <WebProxiedのURL>/agent/install.sh | sudo sh -s -- --api-url <WebProxiedのURL>
+# トークンは、実行中に貼り付ける（コマンドの履歴・プロセスの一覧に残さないため）。自動の導入では、--token-file <ファイル> でも渡せる。
 # 実行ファイルは GitHub Releases から取得し、当社の署名（ed25519）を検証してから入れる（OpenSSL 3.0以降が必要）。
 set -eu
 
+# 途中までしか取得できなかったスクリプトを実行しないよう、全体を関数にして最後に呼ぶ
+main() {
 REPO="cloud-guild/webproxied-agent"
-API_URL="https://webproxied.com"
+API_URL=""
 TOKEN=""
 VERSION="latest"
 SKIP_SIGNATURE=0
@@ -17,7 +20,7 @@ PUBLIC_KEY_PEM=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --token) TOKEN="$2"; shift 2 ;;
+        --token-file) TOKEN="$(tr -d ' \r\n' < "$2")"; shift 2 ;;
         --api-url) API_URL="$2"; shift 2 ;;
         --version) VERSION="$2"; shift 2 ;;
         --skip-signature-check) SKIP_SIGNATURE=1; shift ;;
@@ -28,7 +31,8 @@ done
 fail() { echo "エラー: $*" >&2; exit 1; }
 
 [ "$(id -u)" = "0" ] || fail "root（sudo）で実行してください"
-[ -n "$TOKEN" ] || fail "--token を指定してください（WebProxiedのサーバーの画面に表示されます）"
+[ -n "$API_URL" ] || fail "--api-url を指定してください"
+case "$API_URL" in https://*) ;; *) fail "--api-url は https:// で始まるURLにしてください" ;; esac
 command -v systemctl >/dev/null 2>&1 || fail "systemdが必要です"
 command -v curl >/dev/null 2>&1 || fail "curlが必要です"
 
@@ -38,6 +42,17 @@ case "$(uname -m)" in
     aarch64|arm64) ARCH="arm64" ;;
     *) fail "対応していないCPUです: $(uname -m)" ;;
 esac
+
+if [ -z "$TOKEN" ]; then
+    [ -r /dev/tty ] || fail "トークンを入力できません（--token-file でファイルから渡してください）"
+    printf 'WebProxiedのサーバーの画面に表示されたトークンを貼り付けて、Enterを押してください: ' > /dev/tty
+    stty -echo < /dev/tty 2>/dev/null || true
+    IFS= read -r TOKEN < /dev/tty || true
+    stty echo < /dev/tty 2>/dev/null || true
+    echo > /dev/tty
+    TOKEN="$(printf '%s' "$TOKEN" | tr -d ' \r\n')"
+fi
+case "$TOKEN" in wpa_*) ;; *) fail "トークンの形式が違います（wpa_ で始まります）" ;; esac
 
 ASSET="webproxied-agent_linux_${ARCH}"
 if [ "$VERSION" = "latest" ]; then
@@ -50,18 +65,22 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 echo "取得しています: ${ASSET}"
-curl -fsSL -o "$WORK/$ASSET" "$BASE/$ASSET"
-curl -fsSL -o "$WORK/checksums.txt" "$BASE/checksums.txt"
-curl -fsSL -o "$WORK/checksums.txt.sig" "$BASE/checksums.txt.sig"
+curl -fsSL --proto '=https' -o "$WORK/$ASSET" "$BASE/$ASSET"
+curl -fsSL --proto '=https' -o "$WORK/checksums.txt" "$BASE/checksums.txt"
+curl -fsSL --proto '=https' -o "$WORK/checksums.txt.sig" "$BASE/checksums.txt.sig"
 
 if [ "$SKIP_SIGNATURE" = "1" ]; then
-    echo "注意: 署名を検証しません（--skip-signature-check）。SHA-256だけを確かめます。" >&2
+    echo "注意: 署名を検証しません（--skip-signature-check）。配布元が改ざんされていても気づけません。" >&2
 else
     [ -n "$PUBLIC_KEY_PEM" ] || fail "署名を検証する公開鍵が設定されていません"
     command -v openssl >/dev/null 2>&1 || fail "opensslが必要です（署名の検証）"
+    # ed25519の署名の検証（-rawin）は、OpenSSL 3.0以降で使える
+    if ! openssl pkeyutl -help 2>&1 | grep -q -- '-rawin'; then
+        fail "このサーバーのOpenSSL（$(openssl version)）では、署名を検証できません（OpenSSL 3.0以降が必要です）。OpenSSL 3.0以降のある別のマシンで checksums.txt の署名を検証したうえで、--skip-signature-check を付けて実行してください。"
+    fi
     printf '%s\n' "$PUBLIC_KEY_PEM" > "$WORK/release.pub.pem"
     if ! openssl pkeyutl -verify -pubin -inkey "$WORK/release.pub.pem" -rawin -in "$WORK/checksums.txt" -sigfile "$WORK/checksums.txt.sig" >/dev/null 2>&1; then
-        fail "署名を検証できませんでした（OpenSSL 3.0以降が必要です。古いOpenSSLの場合は、内容を確かめたうえで --skip-signature-check を付けて実行してください）"
+        fail "署名を検証できませんでした。配布物が改ざんされている可能性があるため、導入を中止しました。WebProxiedのサポートへお問い合わせください。"
     fi
     echo "署名を検証しました"
 fi
@@ -70,17 +89,16 @@ EXPECTED="$(grep " ${ASSET}\$" "$WORK/checksums.txt" | awk '{print $1}')"
 ACTUAL="$(sha256sum "$WORK/$ASSET" | awk '{print $1}')"
 [ -n "$EXPECTED" ] && [ "$EXPECTED" = "$ACTUAL" ] || fail "SHA-256が一致しません"
 
-# 専用のユーザー（ログを読めるよう、adm・systemd-journalのグループがあれば加える）
+# 専用のユーザーとグループ
+getent group webproxied-agent >/dev/null 2>&1 || groupadd --system webproxied-agent 2>/dev/null || groupadd -r webproxied-agent
 if ! id webproxied-agent >/dev/null 2>&1; then
-    useradd --system --no-create-home --home-dir "$PREFIX" --shell /usr/sbin/nologin webproxied-agent 2>/dev/null \
-        || useradd -r -M -d "$PREFIX" -s /sbin/nologin webproxied-agent
+    useradd --system --no-create-home --home-dir "$PREFIX" --shell /usr/sbin/nologin -g webproxied-agent webproxied-agent 2>/dev/null \
+        || useradd -r -M -d "$PREFIX" -s /sbin/nologin -g webproxied-agent webproxied-agent
 fi
-for group in adm systemd-journal; do
-    if getent group "$group" >/dev/null 2>&1; then usermod -a -G "$group" webproxied-agent; fi
-done
 
 # 実行ファイルは、自動更新で置き換えられるよう、エージェントのユーザーが書ける場所に置く
 install -d -o webproxied-agent -g webproxied-agent -m 0755 "$PREFIX"
+rm -f "$PREFIX/webproxied-agent.new" "$PREFIX/webproxied-agent.update-pending"
 install -o webproxied-agent -g webproxied-agent -m 0755 "$WORK/$ASSET" "$PREFIX/webproxied-agent"
 
 install -d -m 0750 -g webproxied-agent "$CONFIG_DIR"
@@ -107,7 +125,7 @@ Wants=network-online.target
 User=webproxied-agent
 Group=webproxied-agent
 ExecStart=/opt/webproxied-agent/webproxied-agent run
-# 自動更新で実行ファイルを置き換えたら、終了して再起動する
+# 自動更新で実行ファイルを置き換えたら、終了して再起動する（更新した版が送信に成功しなければ、3回目の起動で元の版へ戻す）
 Restart=always
 RestartSec=10
 # 読み取りだけを行う。書き込めるのは、エージェントの実行ファイルの場所だけ
@@ -115,6 +133,13 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
 ReadWritePaths=/opt/webproxied-agent
 
 [Install]
@@ -123,9 +148,16 @@ UNIT
 systemctl daemon-reload
 
 echo "WebProxiedへ接続できるか確かめています"
-if ! su -s /bin/sh webproxied-agent -c "$PREFIX/webproxied-agent once"; then
-    fail "WebProxiedへ送れませんでした。トークンとネットワーク（${API_URL} へのHTTPS）を確認してください"
+if command -v runuser >/dev/null 2>&1; then
+    runuser -u webproxied-agent -- "$PREFIX/webproxied-agent" once || fail "WebProxiedへ送れませんでした。トークンとネットワーク（${API_URL} へのHTTPS）を確認してください"
+else
+    su -s /bin/sh webproxied-agent -c "$PREFIX/webproxied-agent once" || fail "WebProxiedへ送れませんでした。トークンとネットワーク（${API_URL} へのHTTPS）を確認してください"
 fi
 
-systemctl enable --now webproxied-agent
+# 入れ直し（トークンの作り直し・版の更新）でも、新しい設定と実行ファイルで動くよう、再起動する
+systemctl enable webproxied-agent >/dev/null 2>&1
+systemctl restart webproxied-agent
 echo "導入しました。WebProxiedのサーバーの画面で、接続できたことを確認してください。"
+}
+
+main "$@"

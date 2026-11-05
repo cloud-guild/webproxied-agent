@@ -26,6 +26,8 @@ type Config struct {
 	Interval time.Duration
 	// AutoUpdate は、署名を検証できた新しい版へ、自動で更新するか。
 	AutoUpdate bool
+	// AllowInsecureHTTP は、http:// のAPI_URLを許すか（開発環境だけ。トークンが暗号化されずに送られる）。
+	AllowInsecureHTTP bool
 }
 
 // Load は、設定ファイルを読む。
@@ -70,6 +72,8 @@ func Parse(r interface{ Read([]byte) (int, error) }) (*Config, error) {
 			cfg.Interval = time.Duration(seconds) * time.Second
 		case "AUTO_UPDATE":
 			cfg.AutoUpdate = value != "false" && value != "0" && value != "no"
+		case "ALLOW_INSECURE_HTTP":
+			cfg.AllowInsecureHTTP = value == "true" || value == "1"
 		}
 	}
 
@@ -86,7 +90,7 @@ func (c *Config) validate() error {
 	}
 
 	u, err := url.Parse(c.APIURL)
-	if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
+	if err != nil || u.Host == "" || (u.Scheme != "https" && !(u.Scheme == "http" && c.AllowInsecureHTTP)) {
 		return errors.New("API_URLは https:// で始まるURLにしてください")
 	}
 
