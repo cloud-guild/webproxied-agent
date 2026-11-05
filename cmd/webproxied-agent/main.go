@@ -29,6 +29,42 @@ const updateInterval = 24 * time.Hour
 // minInventoryInterval は、サーバーの情報（inventory）を送る間隔の下限（アプリが続けて求めても、大きなデータを送り続けない）。
 const minInventoryInterval = 10 * time.Minute
 
+// maxInventoryBackoff は、サーバーの情報を付けた送信に失敗し続けたときの、付け直すまでの間隔の上限。
+const maxInventoryBackoff = 24 * time.Hour
+
+// inventorySchedule は、サーバーの情報を、いつ送るか。起動後の最初の送信と、アプリが求めたとき（応答の inventory_due）に送る。
+// 付けた送信に失敗したら（大きすぎる・時間切れなど）、付けずに送り直し、付け直すまでの間隔を延ばす（10分・20分・40分…最大24時間）。
+type inventorySchedule struct {
+	due     bool
+	next    time.Time
+	backoff time.Duration
+}
+
+func newInventorySchedule() *inventorySchedule {
+	return &inventorySchedule{due: true}
+}
+
+// attach は、次の送信に付けるか。
+func (s *inventorySchedule) attach(now time.Time) bool {
+	return s.due && !now.Before(s.next)
+}
+
+// sent は、付けた送信に成功したとき。
+func (s *inventorySchedule) sent(now time.Time) {
+	s.due, s.backoff, s.next = false, 0, now.Add(minInventoryInterval)
+}
+
+// failed は、付けた送信に失敗したとき。
+func (s *inventorySchedule) failed(now time.Time) {
+	s.backoff = min(max(s.backoff*2, minInventoryInterval), maxInventoryBackoff)
+	s.next = now.Add(s.backoff)
+}
+
+// requested は、アプリが求めたとき（応答の inventory_due）。
+func (s *inventorySchedule) requested() {
+	s.due = true
+}
+
 // Report は、アプリへ送るデータ。
 type Report struct {
 	AgentVersion string           `json:"agent_version"`
@@ -92,7 +128,10 @@ func once(path string) int {
 	}
 
 	ctx := context.Background()
-	res, err := c.Report(ctx, newReport(ctx, metrics.New()))
+	mc := metrics.New()
+	// CPUの使用率を出せるよう、少し間を空けてから集める
+	time.Sleep(time.Second)
+	res, err := c.Report(ctx, newReport(ctx, mc))
 	if err != nil {
 		log.Printf("送れませんでした: %v", err)
 		return 1
@@ -131,9 +170,7 @@ func run(path string) int {
 
 	mc := metrics.New()
 	ic := inventory.New()
-	// 起動後の最初の送信では、サーバーの情報も送る
-	inventoryDue := true
-	var lastInventory time.Time
+	schedule := newInventorySchedule()
 
 	for {
 		select {
@@ -144,14 +181,19 @@ func run(path string) int {
 		}
 
 		rep := newReport(ctx, mc)
-		if inventoryDue && (lastInventory.IsZero() || time.Since(lastInventory) >= minInventoryInterval) {
+		if schedule.attach(time.Now()) {
 			inv := ic.Collect(ctx)
 			rep.Inventory = &inv
-			// 送れなくても、次の送信はサーバーの情報を付けずに送る（大きなデータが原因で、毎回の送信まで失敗し続けないよう）
-			lastInventory = time.Now()
 		}
 
 		res, err := c.Report(ctx, rep)
+		if err != nil && rep.Inventory != nil && ctx.Err() == nil {
+			// 大きなデータが原因で、毎回の送信まで失敗し続けないよう、サーバーの情報を付けずに、すぐ送り直す
+			log.Printf("サーバーの情報を付けた送信に失敗しました（%v）。付けずに送り直します", err)
+			schedule.failed(time.Now())
+			rep.Inventory = nil
+			res, err = c.Report(ctx, rep)
+		}
 
 		switch {
 		case err == nil:
@@ -159,10 +201,10 @@ func run(path string) int {
 			update.ConfirmHealthy()
 			mc.Commit()
 			if rep.Inventory != nil {
-				inventoryDue = false
+				schedule.sent(time.Now())
 			}
 			if res.InventoryDue {
-				inventoryDue = true
+				schedule.requested()
 			}
 			applyWatch(mc, res)
 			if res.IntervalSeconds >= 30 {

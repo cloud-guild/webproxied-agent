@@ -64,14 +64,17 @@ func TestCollect(t *testing.T) {
 	write("proc/self/mountinfo", "22 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw,errors=remount-ro\n"+
 		"23 22 0:21 / /run rw - tmpfs tmpfs rw\n")
 
-	// 最初の値を控えてから、CPUを使った分だけ進める
+	// 最初の値を控えてから、CPUを使った分だけ進める（テストの差は小さいため、下限を外す）
+	oldMin := minCPUTicks
+	minCPUTicks = 1
+	defer func() { minCPUTicks = oldMin }()
 	c.prevCPU, _ = c.readCPU()
 	write("proc/stat", "cpu  160 0 140 780 60 0 0 60 0 0\n")
 
 	m := c.Collect(context.Background())
 
-	// 差: total 200、idle 80 + iowait 10 → 使用率 55%、steal 5%、iowait 5%
-	if m.CPU == nil || m.CPU.UsagePct != 55 || m.CPU.StealPct != 5 || m.CPU.IOWaitPct != 5 {
+	// 差: total 200、idle 80 + iowait 10 + steal 10 → 使用率 50%、steal 5%、iowait 5%
+	if m.CPU == nil || m.CPU.UsagePct != 50 || m.CPU.StealPct != 5 || m.CPU.IOWaitPct != 5 {
 		t.Errorf("cpu: %+v", m.CPU)
 	}
 	if m.Load == nil || m.Load.One != 0.52 || m.Load.Fifteen != 0.59 {
@@ -125,6 +128,23 @@ func TestCPUCounterReset(t *testing.T) {
 	if cpuUsage(cpuTimes{total: 100}, cpuTimes{total: 100}) != nil {
 		t.Fatal("差が無いのに使用率を出す")
 	}
+	if cpuUsage(cpuTimes{total: 100}, cpuTimes{total: 100 + minCPUTicks - 1}) != nil {
+		t.Fatal("短すぎる間隔で使用率を出す")
+	}
+}
+
+func TestDiskSameDeviceFallback(t *testing.T) {
+	c, write := testCollector(t, nil)
+	write("proc/self/mountinfo", "22 1 8:1 / /broken rw - ext4 /dev/sda1 rw\n23 1 8:1 / /ok rw - ext4 /dev/sda1 rw\n")
+	c.Statfs = func(path string) (FSStat, error) {
+		if path == "/broken" {
+			return FSStat{}, errors.New("denied")
+		}
+		return FSStat{Blocks: 10, BlockSize: 1}, nil
+	}
+	if disks := c.collectDisks(); len(disks) != 1 || disks[0].Mount != "/ok" {
+		t.Fatalf("同じデバイスの、調べられるマウント先を飛ばす: %+v", disks)
+	}
 }
 
 func TestDiskMounts(t *testing.T) {
@@ -140,7 +160,8 @@ func TestDiskMounts(t *testing.T) {
 	}, "\n")
 
 	mounts := diskMounts(ParseMountinfo(strings.NewReader(info)))
-	if len(mounts) != 2 {
+	// 同じデバイスの重なりは、collectDisks で除く
+	if len(mounts) != 3 || mounts[2].mount != "/var/lib/docker" {
 		t.Fatalf("unexpected: %+v", mounts)
 	}
 	// ProtectSystem でマウントが読み取り専用でも、ファイルシステムが書き込めるなら readonly にしない
@@ -204,6 +225,9 @@ func TestParseChronyTracking(t *testing.T) {
 	if ts == nil || ts.Synced || *ts.OffsetMS != 1.5 {
 		t.Fatalf("unexpected: %+v", ts)
 	}
+	if ts := ParseChronyTracking([]byte("Reference ID    : 00000000 ()\nLeap status     : Normal\n")); ts == nil || ts.Synced {
+		t.Fatalf("同期の元が無いのに、同期していると判断する: %+v", ts)
+	}
 	if ParseChronyTracking([]byte("506 Cannot talk to daemon\n")) != nil {
 		t.Fatal("読めない出力から、状態を作る")
 	}
@@ -215,7 +239,7 @@ func TestWatchServices(t *testing.T) {
 			"LoadState=loaded\nActiveState=failed\nSubState=failed\n\nLoadState=not-found\nActiveState=inactive\nSubState=dead\n",
 	})
 
-	names := []string{"nginx.service", "php8.3-fpm", "--version", "a;rm -rf /", "../x", "nothere", "nginx"}
+	names := []string{"nginx.service", "php8.3-fpm", "--version", "a;rm -rf /", "../x", "@x", "a@b@c", strings.Repeat("a", 248), "nothere", "nginx"}
 	c.SetWatchServices(names)
 	got := c.watchedServices(context.Background())
 
@@ -245,6 +269,18 @@ func TestWatchServices(t *testing.T) {
 	c.SetWatchServices([]string{})
 	if c.hasWatch {
 		t.Fatal("空の指定で、監視をやめない")
+	}
+}
+
+func TestWatchServicesOneByOne(t *testing.T) {
+	c, _ := testCollector(t, map[string]string{
+		"systemctl show --no-pager --property=LoadState,ActiveState,SubState -- nginx.service": "LoadState=loaded\nActiveState=active\nSubState=running\n",
+	})
+	// まとめて調べるのに失敗したら、1つずつ調べる
+	c.SetWatchServices([]string{"nginx", "odd"})
+	got := c.watchedServices(context.Background())
+	if len(got) != 2 || !got[0].Active || got[1].ActiveState != "unknown" {
+		t.Fatalf("unexpected: %+v", got)
 	}
 }
 

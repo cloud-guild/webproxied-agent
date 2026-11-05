@@ -5,6 +5,7 @@
 # 実行ファイルは GitHub Releases から取得し、当社の署名（ed25519）を検証してから入れる（OpenSSL 3.0以降が必要）。
 # オプション:
 #   --read-logs            アクセスログ（5xxの割合）を読めるよう、エージェントのユーザーをログのグループ（adm）に加える
+#                          （adm のグループは、syslog・auth.log・journal なども読める）
 #   --allow-insecure-http  開発環境だけ。--api-url に http:// を許す（トークンが暗号化されずに送られる）
 set -eu
 
@@ -113,16 +114,26 @@ if ! id webproxied-agent >/dev/null 2>&1; then
         || useradd -r -M -d "$PREFIX" -s /sbin/nologin -g webproxied-agent webproxied-agent
 fi
 
-# アクセスログを読むためのグループ（--read-logs を付けたときだけ加える。付けずに入れ直したら外す）
+# アクセスログを読むためのグループ（--read-logs を付けたときだけ加える）。
+# 付けずに入れ直したときは、前に --read-logs で加えていた場合だけ外す（管理者が手で加えたものは外さない）
 LOG_GROUP="adm"
+READ_LOGS_CONF=false
+READ_LOGS_BEFORE=0
+if [ -r "$CONFIG_DIR/agent.conf" ] && grep -qx 'READ_LOGS=true' "$CONFIG_DIR/agent.conf"; then
+    READ_LOGS_BEFORE=1
+fi
 if [ "$READ_LOGS" = "1" ]; then
+    READ_LOGS_CONF=true
     if getent group "$LOG_GROUP" >/dev/null 2>&1; then
         usermod -a -G "$LOG_GROUP" webproxied-agent
-        echo "アクセスログを読めるよう、webproxied-agent を ${LOG_GROUP} のグループに加えました"
+        echo "アクセスログを読めるよう、webproxied-agent を ${LOG_GROUP} のグループに加えました（${LOG_GROUP} のグループは、syslog・auth.log・journal なども読めます）"
     else
-        echo "注意: ${LOG_GROUP} のグループが無いため、アクセスログを読めない場合があります（ログのファイルの権限を確認してください）" >&2
+        echo "注意: ${LOG_GROUP} のグループが無いため、グループに加えませんでした（ログのファイルの権限を確認してください）" >&2
     fi
-elif id -nG webproxied-agent 2>/dev/null | tr ' ' '\n' | grep -qx "$LOG_GROUP"; then
+    if [ -d /var/log/httpd ]; then
+        echo "注意: RHEL系の httpd のログ（/var/log/httpd）は、rootだけが読めるため、${LOG_GROUP} のグループでは読めません" >&2
+    fi
+elif [ "$READ_LOGS_BEFORE" = "1" ] && id -nG webproxied-agent 2>/dev/null | tr ' ' '\n' | grep -qx "$LOG_GROUP"; then
     gpasswd -d webproxied-agent "$LOG_GROUP" >/dev/null
     echo "--read-logs を付けていないため、webproxied-agent を ${LOG_GROUP} のグループから外しました"
 fi
@@ -141,6 +152,8 @@ TOKEN=${TOKEN}
 INTERVAL_SECONDS=60
 AUTO_UPDATE=true
 ALLOW_INSECURE_HTTP=${ALLOW_INSECURE_HTTP}
+# --read-logs で ${LOG_GROUP} のグループに加えたか（入れ直しのときに使う）
+READ_LOGS=${READ_LOGS_CONF}
 CONF
 chgrp webproxied-agent "$CONFIG_DIR/agent.conf"
 chmod 0640 "$CONFIG_DIR/agent.conf"

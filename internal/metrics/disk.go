@@ -115,15 +115,13 @@ func diskMounts(entries []mountEntry) []mountEntry {
 	}
 
 	var out []mountEntry
-	devices := map[string]bool{}
 	for i, e := range entries {
-		if top[e.mount] != i || excludedFS[e.fstype] || devices[e.device] {
+		if top[e.mount] != i || excludedFS[e.fstype] {
 			continue
 		}
 		if e.mount == "/proc" || strings.HasPrefix(e.mount, "/proc/") || strings.HasPrefix(e.mount, "/sys/") || strings.HasPrefix(e.mount, "/dev/") {
 			continue
 		}
-		devices[e.device] = true
 		out = append(out, e)
 	}
 
@@ -150,11 +148,17 @@ func (c *Collector) collectDisks() []Disk {
 	entries := ParseMountinfo(f)
 	f.Close()
 
+	// 同じデバイス（バインドマウント・btrfsのサブボリュームなど）は、調べられた最初のマウント先だけを送る
+	devices := map[string]bool{}
 	for _, e := range diskMounts(entries) {
+		if devices[e.device] {
+			continue
+		}
 		stat, ok := c.statWithTimeout(e.mount)
 		if !ok || stat.Blocks == 0 {
 			continue
 		}
+		devices[e.device] = true
 
 		used := uint64(0)
 		if stat.Blocks >= stat.BlocksFree {

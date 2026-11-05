@@ -3,6 +3,8 @@ package command
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -39,6 +41,42 @@ func TestRunEnvironment(t *testing.T) {
 	out, _ := Run(context.Background(), Options{}, "sh", "-c", "echo \"${WEBPROXIED_SECRET:-none} $LC_ALL\"")
 	if string(out) != "none C\n" {
 		t.Fatalf("環境変数を引き継いでしまう: %q", out)
+	}
+}
+
+func TestTrusted(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tool")
+	os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755)
+	os.Chmod(dir, 0o755)
+
+	if os.Getuid() == 0 {
+		if err := Trusted(path); err != nil {
+			t.Fatalf("rootの実行ファイルを信頼しない: %v", err)
+		}
+	}
+
+	// 他の人が書けるディレクトリ・実行ファイル
+	os.Chmod(dir, 0o777)
+	if err := Trusted(path); !errors.Is(err, ErrUntrusted) {
+		t.Fatalf("他の人が書けるディレクトリを信頼する: %v", err)
+	}
+	os.Chmod(dir, 0o755)
+	os.Chmod(path, 0o777)
+	if err := Trusted(path); !errors.Is(err, ErrUntrusted) {
+		t.Fatalf("他の人が書ける実行ファイルを信頼する: %v", err)
+	}
+
+	// root以外の所有
+	os.Chmod(path, 0o755)
+	if os.Getuid() == 0 {
+		os.Chown(path, 1000, 1000)
+		if err := Trusted(path); !errors.Is(err, ErrUntrusted) {
+			t.Fatalf("root以外の所有を信頼する: %v", err)
+		}
+		if _, err := Run(context.Background(), Options{}, path); !errors.Is(err, ErrUntrusted) {
+			t.Fatalf("絶対パスでも確かめない: %v", err)
+		}
 	}
 }
 

@@ -57,7 +57,7 @@ func (c *Collector) timeSync(ctx context.Context) *TimeSync {
 //	Leap status     : Normal
 func ParseChronyTracking(out []byte) *TimeSync {
 	t := &TimeSync{Source: "chronyc"}
-	found := false
+	found, noSource := false, false
 
 	for _, line := range strings.Split(string(out), "\n") {
 		key, value, ok := strings.Cut(line, ":")
@@ -67,6 +67,11 @@ func ParseChronyTracking(out []byte) *TimeSync {
 		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
 
 		switch key {
+		case "Reference ID":
+			// 同期の元が無い（00000000）か、自分の時計（7F7F0101、LOCAL）なら、同期していない
+			if id, _, _ := strings.Cut(value, " "); id == "00000000" || id == "7F7F0101" {
+				noSource = true
+			}
 		case "Leap status":
 			found = true
 			t.Synced = value != "Not synchronised"
@@ -87,6 +92,9 @@ func ParseChronyTracking(out []byte) *TimeSync {
 
 	if !found {
 		return nil
+	}
+	if noSource {
+		t.Synced = false
 	}
 
 	return t

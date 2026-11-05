@@ -33,3 +33,11 @@ func TestParseDefaultsAndErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestParseIgnoresInstallerKeys(t *testing.T) {
+	// 導入スクリプトが書く READ_LOGS は、エージェントでは使わない（入れ直しのときに読む）
+	cfg, err := Parse(strings.NewReader("API_URL=http://localhost:8000\nTOKEN=wpa_x\nALLOW_INSECURE_HTTP=true\nREAD_LOGS=true\n"))
+	if err != nil || !cfg.AllowInsecureHTTP {
+		t.Fatalf("unexpected: %+v %v", cfg, err)
+	}
+}

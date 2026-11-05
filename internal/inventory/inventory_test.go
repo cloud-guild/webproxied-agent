@@ -136,6 +136,18 @@ func TestCollect(t *testing.T) {
 	}
 }
 
+func TestCollectDpkgEmptyFallsBackToRPM(t *testing.T) {
+	f := &fake{
+		available: map[string]bool{"dpkg-query": true, "rpm": true},
+		outputs: map[string]string{
+			"rpm -qa --qf %{NAME}\t%{EPOCHNUM}:%{VERSION}-%{RELEASE}\t%{ARCH}\t%{SOURCERPM}\n": "bash\t0:5.1.8-9.el9\tx86_64\tbash-5.1.8-9.el9.src.rpm\n",
+		},
+	}
+	if inv := f.collector(t.TempDir()).Collect(context.Background()); len(inv.Packages) != 1 || inv.Packages[0].Name != "bash" {
+		t.Fatalf("dpkgが空のとき、rpmを試さない: %+v", inv.Packages)
+	}
+}
+
 func TestCollectAPKAndLimit(t *testing.T) {
 	root := t.TempDir()
 	os.MkdirAll(filepath.Join(root, "lib/apk/db"), 0o755)

@@ -110,14 +110,16 @@ var packageOptions = command.Options{Timeout: 60 * time.Second, Limit: 16 << 20}
 func (c *Collector) packages(ctx context.Context) ([]Package, bool) {
 	var list []Package
 
-	switch {
-	case c.has("dpkg-query"):
+	// dpkg と rpm の両方が入っていることがある（RHELにEPELのdpkgなど）ため、どちらかで1件も取れなければ、もう一方も試す
+	if c.has("dpkg-query") {
 		out, _ := c.Run(ctx, packageOptions, "dpkg-query", "-W", "-f=${db:Status-Abbrev}\t${binary:Package}\t${Version}\t${source:Package}\t${source:Version}\t${Architecture}\n")
 		list = ParseDpkg(out)
-	case c.has("rpm"):
+	}
+	if len(list) == 0 && c.has("rpm") {
 		out, _ := c.Run(ctx, packageOptions, "rpm", "-qa", "--qf", "%{NAME}\t%{EPOCHNUM}:%{VERSION}-%{RELEASE}\t%{ARCH}\t%{SOURCERPM}\n")
 		list = ParseRPM(out)
-	default:
+	}
+	if len(list) == 0 {
 		// Alpine Linux は、apkのデータベースのファイルを読む（コマンドの出力は、名前と版の区切りが曖昧なため）
 		if f, err := os.Open(filepath.Join(c.Root, "lib/apk/db/installed")); err == nil {
 			list = ParseAPK(f)

@@ -10,11 +10,20 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
-// SearchDirs は、実行ファイルを探すディレクトリ（環境変数のPATHは使わない）。
-var SearchDirs = []string{"/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"}
+func ownedByRoot(info os.FileInfo) bool {
+	st, ok := info.Sys().(*syscall.Stat_t)
+	return ok && st.Uid == 0
+}
+
+// SearchDirs は、実行ファイルを探すディレクトリ（環境変数のPATHは使わない）。システムの場所を先に探す。
+var SearchDirs = []string{"/usr/sbin", "/usr/bin", "/sbin", "/bin", "/usr/local/sbin", "/usr/local/bin"}
+
+// RequireRootOwner は、実行ファイルとそのディレクトリが、rootの所有で、他の人が書き換えられないことを求めるか（テストで外す）。
+var RequireRootOwner = true
 
 // Options は、実行の上限。
 type Options struct {
@@ -32,6 +41,34 @@ type Runner func(ctx context.Context, opts Options, name string, args ...string)
 // ErrNotFound は、実行ファイルが見つからないとき。
 var ErrNotFound = errors.New("実行ファイルが見つかりません")
 
+// ErrUntrusted は、実行ファイルを、root以外が書き換えられるとき（/usr/local を一般のユーザーに渡している環境などで、偽のコマンドを実行しない）。
+var ErrUntrusted = errors.New("実行ファイルを、root以外が書き換えられます")
+
+// Trusted は、実行ファイル（シンボリックリンクなら、その先）とそのディレクトリが、rootの所有で、グループや他の人が書けないかを確かめる。
+func Trusted(path string) error {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return ErrNotFound
+	}
+
+	info, err := os.Stat(resolved)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		return ErrNotFound
+	}
+	if !RequireRootOwner {
+		return nil
+	}
+
+	for _, p := range []string{resolved, filepath.Dir(resolved)} {
+		info, err := os.Stat(p)
+		if err != nil || !ownedByRoot(info) || info.Mode().Perm()&0o022 != 0 {
+			return ErrUntrusted
+		}
+	}
+
+	return nil
+}
+
 // LookPath は、名前から実行ファイルを探す（SearchDirsだけを探す）。
 func LookPath(name string) (string, error) {
 	if strings.ContainsRune(name, '/') {
@@ -40,7 +77,7 @@ func LookPath(name string) (string, error) {
 
 	for _, dir := range SearchDirs {
 		path := filepath.Join(dir, name)
-		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
+		if Trusted(path) == nil {
 			return path, nil
 		}
 	}
@@ -52,7 +89,11 @@ func LookPath(name string) (string, error) {
 // 終了の状態が0でなくても、それまでの出力を返す。
 func Run(ctx context.Context, opts Options, name string, args ...string) ([]byte, error) {
 	path := name
-	if !filepath.IsAbs(name) {
+	if filepath.IsAbs(name) {
+		if err := Trusted(name); err != nil {
+			return nil, err
+		}
+	} else {
 		var err error
 		if path, err = LookPath(name); err != nil {
 			return nil, err

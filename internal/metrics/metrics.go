@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -168,8 +169,11 @@ func (c *Collector) readCPU() (*cpuTimes, error) {
 	return nil, os.ErrNotExist
 }
 
+// minCPUTicks は、使用率を出すのに要る、前回からのCPUの時間（USER_HZ=100で、CPU1つあたり0.5秒）。短すぎる間隔では、値がぶれるため出さない。
+var minCPUTicks = uint64(50 * runtime.NumCPU())
+
 func cpuUsage(prev, now cpuTimes) *CPU {
-	if now.total <= prev.total {
+	if now.total <= prev.total || now.total-prev.total < minCPUTicks {
 		return nil
 	}
 
@@ -180,10 +184,11 @@ func cpuUsage(prev, now cpuTimes) *CPU {
 		}
 		return float64(b - a)
 	}
-	idle := delta(prev.idle, now.idle) + delta(prev.iowait, now.iowait)
+	// 使用率には、待ち（idle・iowait）と、他の仮想マシンに取られた時間（steal）を含めない（それぞれ別に送る）
+	notUsed := delta(prev.idle, now.idle) + delta(prev.iowait, now.iowait) + delta(prev.steal, now.steal)
 
 	return &CPU{
-		UsagePct:  round(max(0, 100*(total-idle)/total)),
+		UsagePct:  round(max(0, 100*(total-notUsed)/total)),
 		StealPct:  round(100 * delta(prev.steal, now.steal) / total),
 		IOWaitPct: round(100 * delta(prev.iowait, now.iowait) / total),
 	}

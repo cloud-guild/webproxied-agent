@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -178,5 +179,132 @@ func TestAccessLogRestrictions(t *testing.T) {
 	c.SetAccessLogs([]AccessLogSpec{})
 	if c.logs != nil || c.Collect(t.Context()).AccessLog != nil {
 		t.Fatal("空の指定で、数えるのをやめない")
+	}
+}
+
+func TestAccessLogFIFODoesNotBlock(t *testing.T) {
+	c, dir, now := setupLogs(t)
+	fifo := filepath.Join(dir, "fifo.log")
+	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
+		t.Skip(err)
+	}
+
+	done := make(chan *AccessLog, 1)
+	go func() {
+		c.SetAccessLogs([]AccessLogSpec{{Path: fifo, Format: "combined"}})
+		done <- c.logs.collect(*now)
+	}()
+
+	select {
+	case got := <-done:
+		if len(got.Unreadable) != 1 {
+			t.Fatalf("名前付きパイプを読む: %+v", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("名前付きパイプを開いて止まる")
+	}
+}
+
+func TestAccessLogExistingFileFixedLater(t *testing.T) {
+	c, dir, now := setupLogs(t)
+	path := filepath.Join(dir, "access.log")
+	appendLog(t, path, logLine(500), logLine(500))
+
+	// 形式を間違えて指定し、後から直しても、前からあった行は数えない
+	c.SetAccessLogs([]AccessLogSpec{{Path: path, Format: "json"}})
+	if got := c.logs.collect(*now); len(got.Unreadable) != 1 {
+		t.Fatalf("unexpected: %+v", got)
+	}
+	c.SetAccessLogs([]AccessLogSpec{{Path: path, Format: "combined"}})
+	appendLog(t, path, logLine(200))
+	if got := c.logs.collect(*now); got.Total != 0 || len(got.Unreadable) != 0 {
+		t.Fatalf("前からあった行を数える: %+v", got)
+	}
+	appendLog(t, path, logLine(200))
+	if got := c.logs.collect(*now); got.Total != 1 {
+		t.Fatalf("unexpected: %+v", got)
+	}
+
+	// 開いている途中で、対応していない形式に変えたら、数えるのをやめる
+	c.SetAccessLogs([]AccessLogSpec{{Path: path, Format: "json"}})
+	appendLog(t, path, logLine(500))
+	if got := c.logs.collect(*now); got.Total != 1 || len(got.Unreadable) != 1 {
+		t.Fatalf("対応していない形式でも数える: %+v", got)
+	}
+}
+
+func TestAccessLogRotatedUnreadableThenReadable(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("rootでは、権限で読めないログを作れない")
+	}
+	c, dir, now := setupLogs(t)
+	path := filepath.Join(dir, "access.log")
+	appendLog(t, path)
+	c.SetAccessLogs([]AccessLogSpec{{Path: path, Format: "combined"}})
+
+	os.Rename(path, path+".1")
+	appendLog(t, path, logLine(500), logLine(200))
+	os.Chmod(path, 0o000)
+	if got := c.logs.collect(*now); len(got.Unreadable) != 1 {
+		t.Fatalf("unexpected: %+v", got)
+	}
+	os.Chmod(path, 0o644)
+	if got := c.logs.collect(*now); got.Total != 2 {
+		t.Fatalf("入れ替わった新しいログを、先頭から数えない: %+v", got)
+	}
+}
+
+func TestAccessLogDeletedIsClosed(t *testing.T) {
+	c, dir, now := setupLogs(t)
+	path := filepath.Join(dir, "access.log")
+	appendLog(t, path)
+	c.SetAccessLogs([]AccessLogSpec{{Path: path, Format: "combined"}})
+
+	os.Remove(path)
+	for i := 0; i < maxMissing; i++ {
+		c.logs.collect(*now)
+	}
+	if c.logs.files[path].f != nil {
+		t.Fatal("消えたログを開いたままにする")
+	}
+
+	appendLog(t, path, logLine(503))
+	if got := c.logs.collect(*now); got.Total != 1 || got.Status5xx != 1 {
+		t.Fatalf("作り直されたログを、先頭から数えない: %+v", got)
+	}
+}
+
+func TestAccessLogCopytruncateLarger(t *testing.T) {
+	c, dir, now := setupLogs(t)
+	path := filepath.Join(dir, "access.log")
+	appendLog(t, path, logLine(200))
+	c.SetAccessLogs([]AccessLogSpec{{Path: path, Format: "combined"}})
+	appendLog(t, path, logLine(200))
+	c.logs.collect(*now)
+	c.Commit()
+
+	// 空にした後、次の集計までに、前回の位置を超えて書かれた
+	os.Truncate(path, 0)
+	appendLog(t, path, strings.Replace(logLine(500), "10.0.0.1", "192.168.100.200", 1), logLine(500), logLine(500))
+	if got := c.logs.collect(*now); got.Total != 3 || got.Status5xx != 3 {
+		t.Fatalf("copytruncateを見逃す: %+v", got)
+	}
+}
+
+func TestAccessLogSymlinkedDir(t *testing.T) {
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "log")
+	os.Symlink(real, link)
+	old := AccessLogDir
+	AccessLogDir = link + "/"
+	t.Cleanup(func() { AccessLogDir = old })
+
+	c, _ := testCollector(t, nil)
+	path := filepath.Join(link, "access.log")
+	appendLog(t, path)
+	c.SetAccessLogs([]AccessLogSpec{{Path: path, Format: "combined"}})
+	appendLog(t, path, logLine(500))
+	if got := c.logs.collect(time.Now()); got.Total != 1 || len(got.Unreadable) != 0 {
+		t.Fatalf("リンクになったログの場所を読めない: %+v", got)
 	}
 }
