@@ -1,2 +1,3 @@
 # 自動更新の署名を検証する公開鍵（32バイトの公開鍵をbase64で。1行に1つ、2つまで）。
 # 秘密鍵は、GitHubとは別の場所で保管する（scripts/gen-key.sh で作る）。鍵を置くまでは、自動更新しない。
+rl9JH3xfWdg0KLAzFeRN85M1Ofg8uD3mMGaicD8bUJ0=

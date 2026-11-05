@@ -4,9 +4,13 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/pem"
 	"fmt"
+	"os"
+	"regexp"
 	"testing"
 )
 
@@ -70,11 +74,47 @@ func TestAllowedURL(t *testing.T) {
 }
 
 func TestPublicKeysFromExtra(t *testing.T) {
+	embedded := len(PublicKeys())
+
 	public, _, _ := ed25519.GenerateKey(rand.Reader)
 	ExtraKeys = base64.StdEncoding.EncodeToString(public) + ",invalid"
 	defer func() { ExtraKeys = "" }()
 
-	if keys := PublicKeys(); len(keys) != 1 || !keys[0].Equal(public) {
+	// 埋め込みの鍵の後ろに、正しい鍵だけが加わる
+	if keys := PublicKeys(); len(keys) != embedded+1 || !keys[embedded].Equal(public) {
 		t.Fatalf("unexpected keys: %v", keys)
 	}
+}
+
+// keys/*.pub の鍵は1つか2つで、install.sh の PUBLIC_KEY_PEM の鍵は、その中にある（片方だけ入れ替えるのを防ぐ）。
+func TestEmbeddedKeysMatchInstallScript(t *testing.T) {
+	keys := PublicKeys()
+	if len(keys) < 1 || len(keys) > 2 {
+		t.Fatalf("keys/*.pub の鍵の数が正しくありません: %d", len(keys))
+	}
+
+	script, err := os.ReadFile("../../packaging/install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?s)\nPUBLIC_KEY_PEM="([^"]*)"`).FindSubmatch(script)
+	if m == nil {
+		t.Fatal("install.sh に PUBLIC_KEY_PEM がありません")
+	}
+	block, _ := pem.Decode(m[1])
+	if block == nil || block.Type != "PUBLIC KEY" {
+		t.Fatal("install.sh の PUBLIC_KEY_PEM を読めません")
+	}
+	parsed, err := x509.ParsePKIXPublicKey(block.Bytes)
+	public, ok := parsed.(ed25519.PublicKey)
+	if err != nil || !ok {
+		t.Fatalf("install.sh の PUBLIC_KEY_PEM が ed25519 の公開鍵ではありません: %v", err)
+	}
+
+	for _, key := range keys {
+		if key.Equal(public) {
+			return
+		}
+	}
+	t.Fatal("install.sh の PUBLIC_KEY_PEM が、keys/*.pub にありません")
 }
