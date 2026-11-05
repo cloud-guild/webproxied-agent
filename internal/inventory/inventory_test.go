@@ -13,24 +13,42 @@ import (
 )
 
 func TestParseDpkg(t *testing.T) {
-	out := "nginx\t1.24.0-2ubuntu7\tamd64\tinstall ok installed\nold\t1.0\tall\tdeinstall ok config-files\nlibc6\t2.39\tamd64\tinstall ok installed\n"
-	want := []Package{{"nginx", "1.24.0-2ubuntu7", "amd64"}, {"libc6", "2.39", "amd64"}}
+	out := "ii \tnginx\t1.24.0-2ubuntu7\tnginx\t1.24.0-2ubuntu7\tamd64\n" +
+		"rc \told\t1.0\told\t1.0\tall\n" +
+		"ii \tlibc6:amd64\t2.39-0ubuntu8\tglibc\t2.39-0ubuntu8\tamd64\n" +
+		"ii \tlibfoo1\t1.2+b1\t\t\tarm64\n"
+	want := []Package{
+		{"nginx", "1.24.0-2ubuntu7", "amd64", "nginx", "1.24.0-2ubuntu7"},
+		{"libc6", "2.39-0ubuntu8", "amd64", "glibc", "2.39-0ubuntu8"},
+		{"libfoo1", "1.2+b1", "arm64", "libfoo1", "1.2+b1"},
+	}
 	if got := ParseDpkg([]byte(out)); !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected: %+v", got)
 	}
 }
 
 func TestParseRPM(t *testing.T) {
-	out := "openssl\t1:3.0.7-27.el9\tx86_64\ngpg-pubkey\t3228467c-613798eb\t(none)\nbash\t5.1.8-9.el9\tx86_64\n"
-	want := []Package{{"openssl", "1:3.0.7-27.el9", "x86_64"}, {"bash", "5.1.8-9.el9", "x86_64"}}
+	out := "openssl-libs\t1:3.0.7-27.el9\tx86_64\topenssl-3.0.7-27.el9.src.rpm\n" +
+		"gpg-pubkey\t0:3228467c-613798eb\t(none)\t(none)\n" +
+		"bash\t0:5.1.8-9.el9\tx86_64\tbash-5.1.8-9.el9.src.rpm\n" +
+		"odd\t0:1-1\tnoarch\t(none)\n"
+	want := []Package{
+		{"openssl-libs", "1:3.0.7-27.el9", "x86_64", "openssl", "1:3.0.7-27.el9"},
+		{"bash", "5.1.8-9.el9", "x86_64", "bash", "5.1.8-9.el9"},
+		{"odd", "1-1", "noarch", "odd", "1-1"},
+	}
 	if got := ParseRPM([]byte(out)); !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected: %+v", got)
 	}
 }
 
 func TestParseAPK(t *testing.T) {
-	db := "C:Q1abc\nP:musl\nV:1.2.5-r0\nA:x86_64\nS:1\n\nP:busybox\nV:1.36.1-r29\nA:x86_64\n"
-	want := []Package{{"musl", "1.2.5-r0", "x86_64"}, {"busybox", "1.36.1-r29", "x86_64"}}
+	db := "C:Q1abc\nP:musl\nV:1.2.5-r0\nA:x86_64\nS:1\no:musl\n\nP:ssl_client\nV:1.36.1-r29\nA:x86_64\no:busybox\n\nP:noorigin\nV:1-r0\nA:x86_64\n"
+	want := []Package{
+		{"musl", "1.2.5-r0", "x86_64", "musl", "1.2.5-r0"},
+		{"ssl_client", "1.36.1-r29", "x86_64", "busybox", "1.36.1-r29"},
+		{"noorigin", "1-r0", "x86_64", "noorigin", "1-r0"},
+	}
 	if got := ParseAPK(strings.NewReader(db)); !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected: %+v", got)
 	}
@@ -77,7 +95,7 @@ func TestCollect(t *testing.T) {
 	f := &fake{
 		available: map[string]bool{"dpkg-query": true, "nginx": true, "php": true, "mysqld": true, "redis-server": true, "node": true, "systemctl": true},
 		outputs: map[string]string{
-			"dpkg-query -W -f=${Package}\t${Version}\t${Architecture}\t${Status}\n": "zlib1g\t1.3\tamd64\tinstall ok installed\nbash\t5.2\tamd64\tinstall ok installed\n",
+			"dpkg-query -W -f=${db:Status-Abbrev}\t${binary:Package}\t${Version}\t${source:Package}\t${source:Version}\t${Architecture}\n": "ii \tzlib1g\t1.3\tzlib\t1.3\tamd64\nii \tbash\t5.2\t\t\tamd64\n",
 			"/usr/bin/nginx -v":                             "nginx version: nginx/1.24.0 (Ubuntu)\n",
 			"/usr/bin/php -v":                               "PHP 8.3.6 (cli) (built: Apr 15 2024)\nCopyright (c) The PHP Group\n",
 			"/usr/bin/mysqld --version":                     "/usr/sbin/mysqld  Ver 10.11.6-MariaDB-0+deb12u1 for debian-linux-gnu on x86_64 (Debian 12)\n",
@@ -90,9 +108,15 @@ func TestCollect(t *testing.T) {
 		globs: map[string][]string{"/usr/lib/postgresql/*/bin/postgres": {"/usr/lib/postgresql/15/bin/postgres", "/usr/lib/postgresql/16/bin/postgres"}},
 	}
 
-	inv := f.collector(t.TempDir()).Collect(context.Background())
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "etc"), 0o755)
+	os.WriteFile(filepath.Join(root, "etc/os-release"), []byte("ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"24.04\"\nVERSION=\"24.04.1 LTS (Noble Numbat)\"\nPRETTY_NAME=\"Ubuntu 24.04.1 LTS\"\n"), 0o644)
+	inv := f.collector(root).Collect(context.Background())
 
-	if want := []Package{{"bash", "5.2", "amd64"}, {"zlib1g", "1.3", "amd64"}}; !reflect.DeepEqual(inv.Packages, want) {
+	if want := (OSRelease{"ubuntu", "debian", "24.04", "24.04.1 LTS (Noble Numbat)", "Ubuntu 24.04.1 LTS"}); inv.OSRelease != want {
+		t.Errorf("os_release: %+v", inv.OSRelease)
+	}
+	if want := []Package{{"bash", "5.2", "amd64", "bash", "5.2"}, {"zlib1g", "1.3", "amd64", "zlib", "1.3"}}; !reflect.DeepEqual(inv.Packages, want) {
 		t.Errorf("packages: %+v", inv.Packages)
 	}
 	want := []Middleware{{"nginx", "1.24.0"}, {"php", "8.3.6"}, {"mariadb", "10.11.6"}, {"postgresql", "15.6"}, {"postgresql", "16.2"}, {"redis", "7.0.15"}, {"node", "20.11.1"}}
