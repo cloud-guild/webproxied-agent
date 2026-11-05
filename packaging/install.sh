@@ -21,8 +21,10 @@ READ_LOGS=0
 PREFIX="/opt/webproxied-agent"
 CONFIG_DIR="/etc/webproxied-agent"
 
-# 署名を検証する公開鍵（scripts/gen-key.sh の出力のPEM）。鍵を作るまでは空で、署名の検証ができないため導入しない。
-PUBLIC_KEY_PEM=""
+# 署名を検証する公開鍵（scripts/gen-key.sh の出力のPEM）。internal/update/keys/release.pub と同じ鍵。
+PUBLIC_KEY_PEM="-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEArl9JH3xfWdg0KLAzFeRN85M1Ofg8uD3mMGaicD8bUJ0=
+-----END PUBLIC KEY-----"
 
 while [ $# -gt 0 ]; do
     case "$1" in
