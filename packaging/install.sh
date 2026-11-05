@@ -3,6 +3,10 @@
 #   curl -fsSL <WebProxiedのURL>/agent/install.sh | sudo sh -s -- --api-url <WebProxiedのURL>
 # トークンは、実行中に貼り付ける（コマンドの履歴・プロセスの一覧に残さないため）。自動の導入では、--token-file <ファイル> でも渡せる。
 # 実行ファイルは GitHub Releases から取得し、当社の署名（ed25519）を検証してから入れる（OpenSSL 3.0以降が必要）。
+# オプション:
+#   --read-logs            アクセスログ（5xxの割合）を読めるよう、エージェントのユーザーをログのグループ（adm）に加える
+#                          （adm のグループは、syslog・auth.log・journal なども読める）
+#   --allow-insecure-http  開発環境だけ。--api-url に http:// を許す（トークンが暗号化されずに送られる）
 set -eu
 
 # 途中までしか取得できなかったスクリプトを実行しないよう、全体を関数にして最後に呼ぶ
@@ -12,6 +16,8 @@ API_URL=""
 TOKEN=""
 VERSION="latest"
 SKIP_SIGNATURE=0
+ALLOW_INSECURE_HTTP=false
+READ_LOGS=0
 PREFIX="/opt/webproxied-agent"
 CONFIG_DIR="/etc/webproxied-agent"
 
@@ -24,6 +30,8 @@ while [ $# -gt 0 ]; do
         --api-url) API_URL="$2"; shift 2 ;;
         --version) VERSION="$2"; shift 2 ;;
         --skip-signature-check) SKIP_SIGNATURE=1; shift ;;
+        --allow-insecure-http) ALLOW_INSECURE_HTTP=true; shift ;;
+        --read-logs) READ_LOGS=1; shift ;;
         *) echo "不明な引数: $1" >&2; exit 2 ;;
     esac
 done
@@ -32,7 +40,14 @@ fail() { echo "エラー: $*" >&2; exit 1; }
 
 [ "$(id -u)" = "0" ] || fail "root（sudo）で実行してください"
 [ -n "$API_URL" ] || fail "--api-url を指定してください"
-case "$API_URL" in https://*) ;; *) fail "--api-url は https:// で始まるURLにしてください" ;; esac
+case "$API_URL" in
+    https://*) ;;
+    http://*)
+        [ "$ALLOW_INSECURE_HTTP" = "true" ] || fail "--api-url は https:// で始まるURLにしてください（開発環境で http:// を使うときだけ、--allow-insecure-http を付けます）"
+        echo "注意: http:// で接続します（--allow-insecure-http）。トークンが暗号化されずに送られるため、開発環境だけで使ってください。" >&2
+        ;;
+    *) fail "--api-url は https:// で始まるURLにしてください" ;;
+esac
 command -v systemctl >/dev/null 2>&1 || fail "systemdが必要です"
 command -v curl >/dev/null 2>&1 || fail "curlが必要です"
 
@@ -44,7 +59,10 @@ case "$(uname -m)" in
 esac
 
 if [ -z "$TOKEN" ]; then
-    [ -r /dev/tty ] || fail "トークンを入力できません（--token-file でファイルから渡してください）"
+    # 端末の無い環境（cloud-init・SSM Run Command・Ansible・ptyの無いsudo）では、/dev/tty が読めても書き込めない
+    if ! [ -r /dev/tty ] || ! ( : > /dev/tty ) 2>/dev/null; then
+        fail "端末が無いため、トークンを入力できません（--token-file <ファイル> でトークンを渡してください）"
+    fi
     printf 'WebProxiedのサーバーの画面に表示されたトークンを貼り付けて、Enterを押してください: ' > /dev/tty
     stty -echo < /dev/tty 2>/dev/null || true
     IFS= read -r TOKEN < /dev/tty || true
@@ -96,6 +114,30 @@ if ! id webproxied-agent >/dev/null 2>&1; then
         || useradd -r -M -d "$PREFIX" -s /sbin/nologin -g webproxied-agent webproxied-agent
 fi
 
+# アクセスログを読むためのグループ（--read-logs を付けたときだけ加える）。
+# 付けずに入れ直したときは、前に --read-logs で加えていた場合だけ外す（管理者が手で加えたものは外さない）
+LOG_GROUP="adm"
+READ_LOGS_CONF=false
+READ_LOGS_BEFORE=0
+if [ -r "$CONFIG_DIR/agent.conf" ] && grep -qx 'READ_LOGS=true' "$CONFIG_DIR/agent.conf"; then
+    READ_LOGS_BEFORE=1
+fi
+if [ "$READ_LOGS" = "1" ]; then
+    READ_LOGS_CONF=true
+    if getent group "$LOG_GROUP" >/dev/null 2>&1; then
+        usermod -a -G "$LOG_GROUP" webproxied-agent
+        echo "アクセスログを読めるよう、webproxied-agent を ${LOG_GROUP} のグループに加えました（${LOG_GROUP} のグループは、syslog・auth.log・journal なども読めます）"
+    else
+        echo "注意: ${LOG_GROUP} のグループが無いため、グループに加えませんでした（ログのファイルの権限を確認してください）" >&2
+    fi
+    if [ -d /var/log/httpd ]; then
+        echo "注意: RHEL系の httpd のログ（/var/log/httpd）は、rootだけが読めるため、${LOG_GROUP} のグループでは読めません" >&2
+    fi
+elif [ "$READ_LOGS_BEFORE" = "1" ] && id -nG webproxied-agent 2>/dev/null | tr ' ' '\n' | grep -qx "$LOG_GROUP"; then
+    gpasswd -d webproxied-agent "$LOG_GROUP" >/dev/null
+    echo "--read-logs を付けていないため、webproxied-agent を ${LOG_GROUP} のグループから外しました"
+fi
+
 # 実行ファイルは、自動更新で置き換えられるよう、エージェントのユーザーが書ける場所に置く
 install -d -o webproxied-agent -g webproxied-agent -m 0755 "$PREFIX"
 rm -f "$PREFIX/webproxied-agent.new" "$PREFIX/webproxied-agent.update-pending"
@@ -109,6 +151,9 @@ API_URL=${API_URL}
 TOKEN=${TOKEN}
 INTERVAL_SECONDS=60
 AUTO_UPDATE=true
+ALLOW_INSECURE_HTTP=${ALLOW_INSECURE_HTTP}
+# --read-logs で ${LOG_GROUP} のグループに加えたか（入れ直しのときに使う）
+READ_LOGS=${READ_LOGS_CONF}
 CONF
 chgrp webproxied-agent "$CONFIG_DIR/agent.conf"
 chmod 0640 "$CONFIG_DIR/agent.conf"
@@ -149,9 +194,9 @@ systemctl daemon-reload
 
 echo "WebProxiedへ接続できるか確かめています"
 if command -v runuser >/dev/null 2>&1; then
-    runuser -u webproxied-agent -- "$PREFIX/webproxied-agent" once || fail "WebProxiedへ送れませんでした。トークンとネットワーク（${API_URL} へのHTTPS）を確認してください"
+    runuser -u webproxied-agent -- "$PREFIX/webproxied-agent" once || fail "WebProxiedへ送れませんでした。トークンとネットワーク（${API_URL} への接続）を確認してください"
 else
-    su -s /bin/sh webproxied-agent -c "$PREFIX/webproxied-agent once" || fail "WebProxiedへ送れませんでした。トークンとネットワーク（${API_URL} へのHTTPS）を確認してください"
+    su -s /bin/sh webproxied-agent -c "$PREFIX/webproxied-agent once" || fail "WebProxiedへ送れませんでした。トークンとネットワーク（${API_URL} への接続）を確認してください"
 fi
 
 # 入れ直し（トークンの作り直し・版の更新）でも、新しい設定と実行ファイルで動くよう、再起動する

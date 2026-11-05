@@ -19,11 +19,23 @@ type Client struct {
 	HTTP      *http.Client
 }
 
-// Response は、アプリからの応答（次の送信の間隔や、自動更新の設定）。
+// Response は、アプリからの応答（次の送信の間隔や、自動更新の設定、集める情報の指定）。
 type Response struct {
 	ServerID        int64 `json:"server_id"`
 	IntervalSeconds int   `json:"interval_seconds"`
 	AutoUpdate      *bool `json:"auto_update"`
+	// InventoryDue は、次の送信で、分析のためのサーバーの情報（inventory）を送るか。
+	InventoryDue bool `json:"inventory_due"`
+	// WatchServices は、監視するサービスの名前。応答に無ければ（null）今の指定のまま、空の配列なら監視をやめる。
+	WatchServices []string `json:"watch_services"`
+	// AccessLogs は、5xxの割合を数えるアクセスログ。応答に無ければ今の指定のまま、空の配列なら数えるのをやめる。
+	AccessLogs []AccessLog `json:"access_logs"`
+}
+
+// AccessLog は、数えるアクセスログ（場所と形式）。
+type AccessLog struct {
+	Path   string `json:"path"`
+	Format string `json:"format"`
 }
 
 // ErrUnauthorized は、トークンが無効なとき（サーバーの登録が削除された・トークンを作り直した）。

@@ -20,6 +20,24 @@ curl -fsSL https://webproxied.com/agent/install.sh | sudo sh -s -- --api-url htt
 - OpenSSL 3.0より古いサーバー（Amazon Linux 2・RHEL 8など）では、署名を検証できません。別のマシンで署名を検証したうえで、`--skip-signature-check` を付けて実行してください。
 - 専用のユーザー `webproxied-agent` で動きます。実行ファイルは `/opt/webproxied-agent/`、設定は `/etc/webproxied-agent/agent.conf` です。
 
+### 導入のオプション
+
+- `--read-logs`：アクセスログ（5xxの割合）を読めるよう、エージェントのユーザーを `adm` のグループに加えます（Debian・Ubuntuのnginx・apacheのログ）。
+  - `adm` のグループは、アクセスログのほか、syslog・auth.log・journal なども読めます。
+  - RHEL系の httpd のログ（`/var/log/httpd`）はrootだけが読めるため、このオプションでは読めません。
+  - 付けずに入れ直すと、前に `--read-logs` で加えていた場合だけ、グループから外します（手で加えたものは外しません）。
+- `--allow-insecure-http`：開発環境だけで使います。`--api-url` に `http://` を許します（トークンが暗号化されずに送られます）。
+- `--token-file <ファイル>`：端末の無い環境（cloud-init・SSM Run Command・Ansibleなど）では、トークンをファイルで渡します。
+
+## 集める情報
+
+すべて読み取りだけで、実行するコマンドは決まったもの（シェルを通さず、`/usr/sbin` などの決まった場所から探す）だけです。時間と出力の量に上限を設けています。
+
+- **毎回（1分ごと）**：CPU（使用率・steal・iowait）・ロードアベレージ・メモリ・スワップ・ディスク（tmpfs・overlay・squashfsなどを除く）・スレッドの数と上限・時刻の同期（chronyc・timedatectl）・OOMの回数・稼働時間。
+- ディスクは、常駐のサービス（systemdの `ProtectHome=yes`）からは `/home`・`/root` が見えないため、これらが別のパーティションでも容量を送りません。
+- **WebProxiedの画面で指定したとき**：サービスの状態（`systemctl show`、最大20個）、アクセスログ（`/var/log/` の下だけ。前回から後に追記された行の件数と5xxの件数。ログの入れ替えにも対応）。
+- **起動の直後と、WebProxiedが求めたとき**：入っているパッケージ（dpkg・rpm・apk、最大2万件）・ミドルウェアの版（nginx・apache・php・mysql/mariadb・postgresql・redis・node）・サービスの一覧。
+
 ## 自動更新
 
 エージェントは1日1回、新しい版を確かめ、**当社の署名を検証できたときだけ**自分で更新します。配布元（GitHub）が乗っ取られても、署名の秘密鍵はGitHubとは別の場所で保管しているため、偽の版へは更新しません。
