@@ -15,6 +15,8 @@ import (
 	"github.com/cloud-guild/webproxied-agent/internal/client"
 	"github.com/cloud-guild/webproxied-agent/internal/config"
 	"github.com/cloud-guild/webproxied-agent/internal/host"
+	"github.com/cloud-guild/webproxied-agent/internal/inventory"
+	"github.com/cloud-guild/webproxied-agent/internal/metrics"
 	"github.com/cloud-guild/webproxied-agent/internal/update"
 )
 
@@ -24,11 +26,17 @@ var version = "dev"
 // updateInterval は、新しい版を確かめる間隔。
 const updateInterval = 24 * time.Hour
 
+// minInventoryInterval は、サーバーの情報（inventory）を送る間隔の下限（アプリが続けて求めても、大きなデータを送り続けない）。
+const minInventoryInterval = 10 * time.Minute
+
 // Report は、アプリへ送るデータ。
 type Report struct {
-	AgentVersion string    `json:"agent_version"`
-	SentAt       time.Time `json:"sent_at"`
-	Host         host.Info `json:"host"`
+	AgentVersion string           `json:"agent_version"`
+	SentAt       time.Time        `json:"sent_at"`
+	Host         host.Info        `json:"host"`
+	Metrics      *metrics.Metrics `json:"metrics,omitempty"`
+	// Inventory は、起動後の最初の送信と、アプリが求めたとき（応答の inventory_due）だけ送る。
+	Inventory *inventory.Inventory `json:"inventory,omitempty"`
 }
 
 func main() {
@@ -72,8 +80,8 @@ func load(path string) (*config.Config, *client.Client, bool) {
 	return cfg, client.New(cfg.APIURL, cfg.Token, "webproxied-agent/"+version), true
 }
 
-func report(ctx context.Context, c *client.Client) (*client.Response, error) {
-	return c.Report(ctx, Report{AgentVersion: version, SentAt: time.Now().UTC(), Host: host.Collect()})
+func newReport(ctx context.Context, mc *metrics.Collector) Report {
+	return Report{AgentVersion: version, SentAt: time.Now().UTC(), Host: host.Collect(), Metrics: mc.Collect(ctx)}
 }
 
 // once は、1回だけ送る（導入の直後の確認）。
@@ -83,7 +91,8 @@ func once(path string) int {
 		return 1
 	}
 
-	res, err := report(context.Background(), c)
+	ctx := context.Background()
+	res, err := c.Report(ctx, newReport(ctx, metrics.New()))
 	if err != nil {
 		log.Printf("送れませんでした: %v", err)
 		return 1
@@ -120,6 +129,12 @@ func run(path string) int {
 	lastUpdateCheck := time.Now().Add(-updateInterval + time.Duration(rand.Int64N(int64(time.Hour))))
 	failures := 0
 
+	mc := metrics.New()
+	ic := inventory.New()
+	// 起動後の最初の送信では、サーバーの情報も送る
+	inventoryDue := true
+	var lastInventory time.Time
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -128,12 +143,28 @@ func run(path string) int {
 		case <-timer.C:
 		}
 
-		res, err := report(ctx, c)
+		rep := newReport(ctx, mc)
+		if inventoryDue && (lastInventory.IsZero() || time.Since(lastInventory) >= minInventoryInterval) {
+			inv := ic.Collect(ctx)
+			rep.Inventory = &inv
+			// 送れなくても、次の送信はサーバーの情報を付けずに送る（大きなデータが原因で、毎回の送信まで失敗し続けないよう）
+			lastInventory = time.Now()
+		}
+
+		res, err := c.Report(ctx, rep)
 
 		switch {
 		case err == nil:
 			failures = 0
 			update.ConfirmHealthy()
+			mc.Commit()
+			if rep.Inventory != nil {
+				inventoryDue = false
+			}
+			if res.InventoryDue {
+				inventoryDue = true
+			}
+			applyWatch(mc, res)
 			if res.IntervalSeconds >= 30 {
 				interval = time.Duration(res.IntervalSeconds) * time.Second
 			}
@@ -162,6 +193,20 @@ func run(path string) int {
 			wait = min(interval*time.Duration(1<<min(failures, 4)), 10*time.Minute)
 		}
 		timer.Reset(wait)
+	}
+}
+
+// applyWatch は、アプリが指定した、監視するサービスとアクセスログを反映する（応答に無ければ、今の指定のまま）。
+func applyWatch(mc *metrics.Collector, res *client.Response) {
+	if res.WatchServices != nil {
+		mc.SetWatchServices(res.WatchServices)
+	}
+	if res.AccessLogs != nil {
+		specs := make([]metrics.AccessLogSpec, 0, len(res.AccessLogs))
+		for _, l := range res.AccessLogs {
+			specs = append(specs, metrics.AccessLogSpec{Path: l.Path, Format: l.Format})
+		}
+		mc.SetAccessLogs(specs)
 	}
 }
 

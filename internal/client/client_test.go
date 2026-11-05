@@ -37,3 +37,21 @@ func TestReport(t *testing.T) {
 		t.Fatalf("expected unauthorized, got %v", err)
 	}
 }
+
+func TestResponseWatchFields(t *testing.T) {
+	var absent, cleared, set Response
+	json.Unmarshal([]byte(`{"server_id":1}`), &absent)
+	json.Unmarshal([]byte(`{"watch_services":[],"access_logs":[]}`), &cleared)
+	json.Unmarshal([]byte(`{"inventory_due":true,"watch_services":["nginx"],"access_logs":[{"path":"/var/log/nginx/access.log","format":"combined"}]}`), &set)
+
+	// 応答に無ければ今の指定のまま（nil）、空の配列なら監視をやめる
+	if absent.WatchServices != nil || absent.AccessLogs != nil || absent.InventoryDue {
+		t.Errorf("absent: %+v", absent)
+	}
+	if cleared.WatchServices == nil || len(cleared.WatchServices) != 0 || cleared.AccessLogs == nil {
+		t.Errorf("cleared: %+v", cleared)
+	}
+	if !set.InventoryDue || set.WatchServices[0] != "nginx" || set.AccessLogs[0].Format != "combined" {
+		t.Errorf("set: %+v", set)
+	}
+}
