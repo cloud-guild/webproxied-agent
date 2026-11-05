@@ -8,7 +8,7 @@ KEY="${1:?秘密鍵の保存先を指定してください}"
 umask 077
 openssl genpkey -algorithm ed25519 -out "$KEY"
 
-echo "秘密鍵: $KEY（共有しない・GitHubに置かない）"
+echo "秘密鍵: ${KEY}（共有しない・GitHubに置かない）"
 echo
 echo "internal/update/keys/release.pub に、次の1行を加えてください:"
 openssl pkey -in "$KEY" -pubout -outform DER | tail -c 32 | base64
