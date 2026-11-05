@@ -1,0 +1,22 @@
+[Unit]
+Description=WebProxied Agent
+Documentation=https://github.com/cloud-guild/webproxied-agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=webproxied-agent
+Group=webproxied-agent
+ExecStart=/opt/webproxied-agent/webproxied-agent run
+# 自動更新で実行ファイルを置き換えたら、終了して再起動する
+Restart=always
+RestartSec=10
+# 読み取りだけを行う。書き込めるのは、エージェントの実行ファイルの場所だけ
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/opt/webproxied-agent
+
+[Install]
+WantedBy=multi-user.target
