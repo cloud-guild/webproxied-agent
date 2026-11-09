@@ -55,8 +55,10 @@ func TestParseAPK(t *testing.T) {
 }
 
 func TestParseUnits(t *testing.T) {
-	out := "nginx.service loaded active running A high performance web server\n● php8.3-fpm.service loaded failed failed The PHP 8.3 FastCGI\ncron.timer loaded active waiting x\n"
-	want := []Service{{"nginx", "active", "running"}, {"php8.3-fpm", "failed", "failed"}}
+	// 入っていないユニット（not-found）は除く。止めてあるユニット（masked）は入っているので残す
+	out := "nginx.service loaded active running A high performance web server\n● php8.3-fpm.service loaded failed failed The PHP 8.3 FastCGI\ncron.timer loaded active waiting x\n" +
+		"ntpd.service not-found inactive dead ntpd.service\n● auditd.service not-found inactive dead auditd.service\napache2.service masked inactive dead apache2.service\n"
+	want := []Service{{"nginx", "active", "running"}, {"php8.3-fpm", "failed", "failed"}, {"apache2", "inactive", "dead"}}
 	if got := ParseUnits([]byte(out)); !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected: %+v", got)
 	}
