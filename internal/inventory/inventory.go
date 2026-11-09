@@ -330,6 +330,7 @@ func (c *Collector) services(ctx context.Context) []Service {
 }
 
 // ParseUnits は、systemctl list-units の出力（ユニット・LOAD・ACTIVE・SUB・説明）を読む。
+// LOAD が not-found のユニット（他のユニットから名前だけ参照され、入っていないもの）は除く。
 func ParseUnits(out []byte) []Service {
 	list := []Service{}
 	for _, line := range lines(out) {
@@ -338,7 +339,7 @@ func ParseUnits(out []byte) []Service {
 		if len(fields) > 0 && (fields[0] == "●" || fields[0] == "*") {
 			fields = fields[1:]
 		}
-		if len(fields) < 4 || !strings.HasSuffix(fields[0], ".service") {
+		if len(fields) < 4 || !strings.HasSuffix(fields[0], ".service") || fields[1] == "not-found" {
 			continue
 		}
 		list = append(list, Service{Name: strings.TrimSuffix(fields[0], ".service"), ActiveState: fields[2], SubState: fields[3]})
