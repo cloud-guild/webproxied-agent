@@ -107,7 +107,7 @@ func unescapeMount(s string) string {
 
 // diskMounts は、容量を送るマウント先を選ぶ。
 // 同じマウント先に重ねてマウントされていれば、いちばん上だけを見る（statfsは、いちばん上を調べるため。
-// systemdのProtectHomeで隠された /home などは、上に重なったtmpfsを除くと、送らない）。同じデバイスは1回だけ送る。
+// 上に tmpfs などが重なって隠れたマウント先は、送らない）。同じデバイスは1回だけ送る。
 func diskMounts(entries []mountEntry) []mountEntry {
 	top := map[string]int{}
 	for i, e := range entries {

@@ -178,7 +178,8 @@ RestartSec=10
 # 読み取りだけを行う。書き込めるのは、エージェントの実行ファイルの場所だけ
 NoNewPrivileges=yes
 ProtectSystem=strict
-ProtectHome=yes
+# /home の下のアプリ（KUSANAGI など）の版と、/home の容量を読めるよう、読み取りだけで見せる（読めるのは、専用ユーザーの権限の範囲だけ）
+ProtectHome=read-only
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectKernelTunables=yes

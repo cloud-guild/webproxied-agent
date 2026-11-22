@@ -3,6 +3,7 @@
 [WebProxied](https://webproxied.com) のエージェントです。サーバーに入れて常駐させ、サーバーの情報を集めて、WebProxiedへHTTPSで送ります。
 
 - **読み取りだけ**を行います。サーバーの設定の変更や、コマンドの実行の機能はありません。
+- 専用のユーザー `webproxied-agent` で動き、そのユーザーの権限で読めるものだけを読みます。systemd の制限で、`/opt/webproxied-agent` のほかには書き込めません（`/home`・`/root` は読み取りだけで見えます。`/root` は通常 root だけが読めるため、読めません）。
 - データは、エージェントからWebProxiedへ送ります（サーバー側で、受信用のポートを開ける必要はありません）。
 - 対応：Linux（amd64・arm64）、systemd。Ubuntu 20.04以降・Debian 11以降・RHEL／Rocky Linux／AlmaLinux 8以降・Amazon Linux 2／2023。
 
@@ -34,7 +35,7 @@ curl -fsSL https://webproxied.com/agent/install.sh | sudo sh -s -- --api-url htt
 すべて読み取りだけで、実行するコマンドは決まったもの（シェルを通さず、`/usr/sbin` などの決まった場所から探す）だけです。時間と出力の量に上限を設けています。
 
 - **毎回（1分ごと）**：CPU（使用率・steal・iowait）・ロードアベレージ・メモリ・スワップ・ディスク（tmpfs・overlay・squashfsなどを除く）・スレッドの数と上限・時刻の同期（chronyc・timedatectl）・OOMの回数・稼働時間。
-- ディスクは、常駐のサービス（systemdの `ProtectHome=yes`）からは `/home`・`/root` が見えないため、これらが別のパーティションでも容量を送りません。
+- ディスクは、`/home` が別のパーティションなら、その容量も送ります。
 - **WebProxiedの画面で指定したとき**：サービスの状態（`systemctl show`、最大20個）、アクセスログ（`/var/log/` の下だけ。前回から後に追記された行の件数と5xxの件数。ログの入れ替えにも対応）。
 - **起動の直後（最初の応答を受けた後）と、WebProxiedが求めたとき**：入っているパッケージ（dpkg・rpm・apk、最大2万件）・ミドルウェアの版（nginx・apache・php・mysql/mariadb・postgresql・redis・node）・サービスの一覧。
   - WebProxiedの画面でアプリケーションのディレクトリを指定していれば、そのライブラリ・フレームワーク・CMSの版も送ります（下の「アプリケーションのライブラリ」）。
@@ -53,7 +54,7 @@ WebProxiedの画面で指定したディレクトリ（最大10個）の**直下
 - 上限：1つのファイルは10MBまで、1つのディレクトリで5,000件・全体で20,000件まで、WordPressのプラグイン・テーマは2,000個まで。
 - 読めないときは、そのディレクトリに理由（`not_found`・`permission_denied`・`parse_error:<ファイル>`・`too_large:<ファイル>`・`unsupported:<ファイル>` など）を付けて送り、読めたものは送ります。
 - 対応していないもの：`package-lock.json` の lockfileVersion 1（npm 6まで）、pnpm-lock.yaml の lockfileVersion 5 以前、`npm-shrinkwrap.json`、サブディレクトリにある WordPress（Bedrock の `web/wp` など。`composer.lock` に出る `roots/wordpress`・`wpackagist-plugin/*` は送ります）。`yarn.lock`・`pnpm-lock.yaml`（v9）には開発用の区別が無いため、`dev` は `package.json` の devDependencies だけにある直接の依存だけに付きます。
-- `/home`・`/root` の下は、常駐のサービス（systemdの `ProtectHome=yes`）から見えないため、読めません（`not_found` になります）。
+- `/home` の下（KUSANAGI の `/home/kusanagi/<名前>/DocumentRoot` など）も読めます（読み取りだけ。専用のユーザーの権限の範囲で）。
 
 ### 読めないとき（permission_denied）
 
@@ -79,6 +80,7 @@ WordPress の標準の権限（ディレクトリ755・ファイル644）なら�
 エージェントは1日1回、新しい版を確かめ、**当社の署名を検証できたときだけ**自分で更新します。配布元（GitHub）が乗っ取られても、署名の秘密鍵はGitHubとは別の場所で保管しているため、偽の版へは更新しません。
 
 - 止めるには、設定の `AUTO_UPDATE=false`、またはWebProxiedの画面で自動更新をオフにします。
+- 自動更新で置き換わるのは、実行ファイルだけです。systemd のサービスの設定（`/etc/systemd/system/webproxied-agent.service`）が変わった版では、導入のコマンドを実行し直すと反映されます。
 - 手動で更新するには `sudo -u webproxied-agent /opt/webproxied-agent/webproxied-agent update` のあと、`sudo systemctl restart webproxied-agent`。
 
 ## 削除
