@@ -2,6 +2,7 @@ package inventory
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cloud-guild/webproxied-agent/internal/apps"
 	"github.com/cloud-guild/webproxied-agent/internal/command"
 )
 
@@ -165,5 +167,19 @@ func TestCollectAPKAndLimit(t *testing.T) {
 	}
 	if inv.Middleware == nil || inv.Services == nil {
 		t.Fatal("空のときは、nullではなく空の配列にする")
+	}
+}
+
+// 一度も指定されていなければ applications を送らず、空の指定なら空の配列を送る
+func TestApplicationsJSON(t *testing.T) {
+	data, _ := json.Marshal(Inventory{})
+	if strings.Contains(string(data), `"applications"`) {
+		t.Fatalf("unexpected: %s", data)
+	}
+
+	empty := []apps.Application{}
+	data, _ = json.Marshal(Inventory{Applications: &empty})
+	if !strings.Contains(string(data), `"applications":[]`) {
+		t.Fatalf("unexpected: %s", data)
 	}
 }

@@ -36,7 +36,43 @@ curl -fsSL https://webproxied.com/agent/install.sh | sudo sh -s -- --api-url htt
 - **毎回（1分ごと）**：CPU（使用率・steal・iowait）・ロードアベレージ・メモリ・スワップ・ディスク（tmpfs・overlay・squashfsなどを除く）・スレッドの数と上限・時刻の同期（chronyc・timedatectl）・OOMの回数・稼働時間。
 - ディスクは、常駐のサービス（systemdの `ProtectHome=yes`）からは `/home`・`/root` が見えないため、これらが別のパーティションでも容量を送りません。
 - **WebProxiedの画面で指定したとき**：サービスの状態（`systemctl show`、最大20個）、アクセスログ（`/var/log/` の下だけ。前回から後に追記された行の件数と5xxの件数。ログの入れ替えにも対応）。
-- **起動の直後と、WebProxiedが求めたとき**：入っているパッケージ（dpkg・rpm・apk、最大2万件）・ミドルウェアの版（nginx・apache・php・mysql/mariadb・postgresql・redis・node）・サービスの一覧。
+- **起動の直後（最初の応答を受けた後）と、WebProxiedが求めたとき**：入っているパッケージ（dpkg・rpm・apk、最大2万件）・ミドルウェアの版（nginx・apache・php・mysql/mariadb・postgresql・redis・node）・サービスの一覧。
+  - WebProxiedの画面でアプリケーションのディレクトリを指定していれば、そのライブラリ・フレームワーク・CMSの版も送ります（下の「アプリケーションのライブラリ」）。
+
+## アプリケーションのライブラリ
+
+WebProxiedの画面で指定したディレクトリ（最大10個）の**直下**にある次のファイルから、パッケージの名前と版だけを読みます。ファイルの中身そのもの（`composer.json` の認証情報など）は送りません。
+
+| 読むもの | 送るもの |
+|---|---|
+| `composer.lock`（`composer.json` で直接の依存を判断） | Composer のパッケージ（packagist） |
+| `package-lock.json`（lockfileVersion 2・3）・`yarn.lock`（v1・berry）・`pnpm-lock.yaml`（lockfileVersion 6〜9）（`package.json` で直接の依存を判断） | npm のパッケージ |
+| `wp-includes/version.php`・`wp-content/plugins/<スラッグ>/` の主ファイル・`wp-content/themes/<スラッグ>/style.css` | WordPress の本体・プラグイン・テーマの版（見出しの先頭8KBだけ読む） |
+
+- 指定したディレクトリ自体のシンボリックリンク（`current` → `releases/…` など）は辿ります。その中では、ディレクトリの外を指すリンクは辿りません。
+- 上限：1つのファイルは10MBまで、1つのディレクトリで5,000件・全体で20,000件まで、WordPressのプラグイン・テーマは2,000個まで。
+- 読めないときは、そのディレクトリに理由（`not_found`・`permission_denied`・`parse_error:<ファイル>`・`too_large:<ファイル>`・`unsupported:<ファイル>` など）を付けて送り、読めたものは送ります。
+- 対応していないもの：`package-lock.json` の lockfileVersion 1（npm 6まで）、pnpm-lock.yaml の lockfileVersion 5 以前、`npm-shrinkwrap.json`、サブディレクトリにある WordPress（Bedrock の `web/wp` など。`composer.lock` に出る `roots/wordpress`・`wpackagist-plugin/*` は送ります）。`yarn.lock`・`pnpm-lock.yaml`（v9）には開発用の区別が無いため、`dev` は `package.json` の devDependencies だけにある直接の依存だけに付きます。
+- `/home`・`/root` の下は、常駐のサービス（systemdの `ProtectHome=yes`）から見えないため、読めません（`not_found` になります）。
+
+### 読めないとき（permission_denied）
+
+エージェントは専用のユーザー `webproxied-agent` で動くため、そのユーザーが読める必要があります。一般的な `/var/www` の権限（ディレクトリ755・ファイル644）なら、そのまま読めます。読めないときは、**読むファイルと、そこまでのディレクトリにだけ**権限を与えてください（`wp-config.php` や `.env` などに読み取りの権限を与えないでください）。ACL を使う例：
+
+```sh
+# ディレクトリの中に入れるようにする（一覧は見せない）
+sudo setfacl -m u:webproxied-agent:x /var/www /var/www/example /var/www/example/current
+# ロックファイルなどを読めるようにする
+cd /var/www/example/current
+sudo setfacl -m u:webproxied-agent:r composer.lock composer.json package.json package-lock.json
+# WordPress：版のファイルと、プラグイン・テーマの見出し（一覧を見るため、plugins・themes には r と x）
+sudo setfacl -m u:webproxied-agent:x wp-includes wp-content
+sudo setfacl -m u:webproxied-agent:r wp-includes/version.php
+# プラグイン・テーマ：主ファイルを探すため、中のディレクトリの一覧と .php・style.css を読めるようにする
+sudo setfacl -R -m u:webproxied-agent:rX wp-content/plugins wp-content/themes
+```
+
+WordPress の標準の権限（ディレクトリ755・ファイル644）なら、これらは不要です。
 
 ## 自動更新
 

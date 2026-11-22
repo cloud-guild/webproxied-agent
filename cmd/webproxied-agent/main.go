@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cloud-guild/webproxied-agent/internal/apps"
 	"github.com/cloud-guild/webproxied-agent/internal/client"
 	"github.com/cloud-guild/webproxied-agent/internal/config"
 	"github.com/cloud-guild/webproxied-agent/internal/host"
@@ -32,7 +33,8 @@ const minInventoryInterval = 10 * time.Minute
 // maxInventoryBackoff は、サーバーの情報を付けた送信に失敗し続けたときの、付け直すまでの間隔の上限。
 const maxInventoryBackoff = 24 * time.Hour
 
-// inventorySchedule は、サーバーの情報を、いつ送るか。起動後の最初の送信と、アプリが求めたとき（応答の inventory_due）に送る。
+// inventorySchedule は、サーバーの情報を、いつ送るか。起動後に最初の応答を受けた後の送信と、アプリが求めたとき（応答の inventory_due）、
+// 読むアプリケーションのディレクトリが変わったときに送る。
 // 付けた送信に失敗したら（大きすぎる・時間切れなど）、付けずに送り直し、付け直すまでの間隔を延ばす（10分・20分・40分…最大24時間）。
 type inventorySchedule struct {
 	due     bool
@@ -71,7 +73,7 @@ type Report struct {
 	SentAt       time.Time        `json:"sent_at"`
 	Host         host.Info        `json:"host"`
 	Metrics      *metrics.Metrics `json:"metrics,omitempty"`
-	// Inventory は、起動後の最初の送信と、アプリが求めたとき（応答の inventory_due）だけ送る。
+	// Inventory は、起動後に最初の応答を受けた後の送信と、アプリが求めたとき（応答の inventory_due）だけ送る。
 	Inventory *inventory.Inventory `json:"inventory,omitempty"`
 }
 
@@ -170,7 +172,10 @@ func run(path string) int {
 
 	mc := metrics.New()
 	ic := inventory.New()
+	ac := apps.New()
 	schedule := newInventorySchedule()
+	// 最初の応答を受けるまでは、サーバーの情報を送らない（読むアプリケーションのディレクトリは、応答で分かるため）
+	responded := false
 
 	for {
 		select {
@@ -181,8 +186,11 @@ func run(path string) int {
 		}
 
 		rep := newReport(ctx, mc)
-		if schedule.attach(time.Now()) {
+		if responded && schedule.attach(time.Now()) {
 			inv := ic.Collect(ctx)
+			if list := ac.Collect(ctx); list != nil {
+				inv.Applications = &list
+			}
 			rep.Inventory = &inv
 		}
 
@@ -198,15 +206,25 @@ func run(path string) int {
 		switch {
 		case err == nil:
 			failures = 0
+			responded = true
 			update.ConfirmHealthy()
 			mc.Commit()
-			if rep.Inventory != nil {
+			switch {
+			case rep.Inventory == nil:
+			case rep.Inventory.Applications != nil && apps.TimedOut(*rep.Inventory.Applications):
+				// 時間切れで読めなかったディレクトリがあれば、間隔を延ばしながら送り直す
+				schedule.failed(time.Now())
+			default:
 				schedule.sent(time.Now())
 			}
 			if res.InventoryDue {
 				schedule.requested()
 			}
 			applyWatch(mc, res)
+			// 読むディレクトリが変わったら、次に送れるとき（前回から10分の後）に、サーバーの情報を送り直す
+			if res.AppDirectories != nil && ac.SetDirectories(res.AppDirectories) {
+				schedule.requested()
+			}
 			if res.IntervalSeconds >= 30 {
 				interval = time.Duration(res.IntervalSeconds) * time.Second
 			}

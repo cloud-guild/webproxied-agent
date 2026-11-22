@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cloud-guild/webproxied-agent/internal/apps"
 	"github.com/cloud-guild/webproxied-agent/internal/command"
 	"github.com/cloud-guild/webproxied-agent/internal/host"
 )
@@ -30,6 +31,9 @@ type Inventory struct {
 	PackagesTruncated bool         `json:"packages_truncated,omitempty"`
 	Middleware        []Middleware `json:"middleware"`
 	Services          []Service    `json:"services"`
+	// Applications は、アプリが指定したディレクトリのアプリケーションのパッケージ。一度も指定されていなければ送らず（nil）、
+	// 空の指定なら空の配列を送る（読むのをやめたことが分かるよう、ポインタにする）。
+	Applications *[]apps.Application `json:"applications,omitempty"`
 }
 
 // OSRelease は、/etc/os-release の値（読めない項目は空の文字列）。
