@@ -241,6 +241,53 @@ fi
 systemctl enable webproxied-agent >/dev/null 2>&1
 systemctl restart webproxied-agent
 echo "導入しました。WebProxiedのサーバーの画面で、接続できたことを確認してください。"
+
+sshd_hint
+}
+
+# sshd の設定を、エージェントのユーザーが読めないとき（RHEL系の既定の権限）に、読めるようにする手順を案内する。
+# 権限は変えない（変えるかは、サーバーの管理者が決める）
+sshd_hint() {
+    SSHD_CONFIG="/etc/ssh/sshd_config"
+    [ -f "$SSHD_CONFIG" ] || return 0
+    command -v runuser >/dev/null 2>&1 || return 0
+
+    # 読むファイルを root で並べてから、エージェントのユーザーで読めるかを確かめる（ディレクトリは、一覧と通過も要る）
+    set -- "$SSHD_CONFIG"
+    HAS_DIR=0
+    HAS_CONF=0
+    if [ -d "$SSHD_CONFIG.d" ]; then
+        HAS_DIR=1
+        set -- "$@" "$SSHD_CONFIG.d"
+        for f in "$SSHD_CONFIG.d"/*.conf; do
+            [ -f "$f" ] || continue
+            HAS_CONF=1
+            set -- "$@" "$f"
+        done
+    fi
+    if runuser -u webproxied-agent -- /bin/sh -c '
+        for f; do
+            [ -r "$f" ] || exit 1
+            if [ -d "$f" ]; then [ -x "$f" ] || exit 1; fi
+        done' sh "$@" 2>/dev/null; then
+        return 0
+    fi
+
+    echo
+    echo "注意: webproxied-agent のユーザーが、sshd の設定（${SSHD_CONFIG} など）を読めないため、WebProxiedの画面で、SSHの設定は「確認できず」になります。"
+    echo "読めるようにするには（任意）、次を実行してください。読み取りだけを足します（書き込みや、ほかのファイルの読み取りは増えません）。"
+    echo "  sudo setfacl -m u:webproxied-agent:r ${SSHD_CONFIG}"
+    if [ "$HAS_DIR" = "1" ]; then
+        echo "  sudo setfacl -m u:webproxied-agent:rx ${SSHD_CONFIG}.d"
+    fi
+    if [ "$HAS_CONF" = "1" ]; then
+        echo "  sudo setfacl -m u:webproxied-agent:r ${SSHD_CONFIG}.d/*.conf"
+    fi
+    echo "  sudo systemctl restart webproxied-agent    # すぐに画面へ反映する"
+    if ! command -v setfacl >/dev/null 2>&1; then
+        echo "  （setfacl が無いときは、先に acl のパッケージを入れてください）"
+    fi
+    echo "openssh-server を更新すると、足した読み取りは消えます。更新の後と、${SSHD_CONFIG}.d にファイルを足した後は、もう一度実行してください。"
 }
 
 main "$@"

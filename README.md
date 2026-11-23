@@ -102,7 +102,11 @@ sudo setfacl -m u:webproxied-agent:r /etc/ssh/sshd_config
 # RHEL 9・Amazon Linux 2023 など、sshd_config.d がある場合
 sudo setfacl -m u:webproxied-agent:rx /etc/ssh/sshd_config.d
 sudo setfacl -m u:webproxied-agent:r /etc/ssh/sshd_config.d/*.conf
+# すぐに画面へ反映する（サーバーの情報は、起動の後と、WebProxiedが求めたときに送るため）
+sudo systemctl restart webproxied-agent
 ```
+
+- 導入スクリプトは、エージェントのユーザーが読めないときに、このサーバーに合わせたコマンドを表示します（権限は変えません）。
 
 - `openssh-server` を更新すると、権限が元に戻り、足した読み取りは消えます（Rocky Linux 9 で確かめました）。更新の後は、もう一度実行してください。読めなくなると、画面に「確認できず」と出るので気づけます。
 - 後から `sshd_config.d/` に足したファイルにも、同じように読み取りを足してください。
