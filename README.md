@@ -17,6 +17,9 @@ curl -fsSL https://webproxied.com/agent/install.sh | sudo sh -s -- --api-url htt
 
 - 導入スクリプトは、WebProxiedのドメインから配布します（このリポジトリの `packaging/install.sh` と同じ内容）。
 - 入れ直し（トークンの作り直し・版の更新）でも、同じコマンドを実行します。
+  - 同じ `--api-url` で入れ直すときは、トークンを聞かれたら何も入れずにEnterを押すと、今の設定のトークンを使い続けます（トークンを作り直さずに済みます）。
+  - 新しいトークンを貼り付ければ、そのトークンに替わります。端末が無く `--token-file` も無いときは、今のトークンを使い続けます。
+  - 送り先（`--api-url`）が違うときは、今のトークンを使いません（別の送り先へ送らないため）。
 - 実行ファイルは GitHub Releases から取得し、当社の署名（ed25519）を検証してから入れます（OpenSSL 3.0以降が必要です）。
 - OpenSSL 3.0より古いサーバー（Amazon Linux 2・RHEL 8など）では、署名を検証できません。別のマシンで署名を検証したうえで、`--skip-signature-check` を付けて実行してください。
 - 専用のユーザー `webproxied-agent` で動きます。実行ファイルは `/opt/webproxied-agent/`、設定は `/etc/webproxied-agent/agent.conf` です。
@@ -80,7 +83,7 @@ WordPress の標準の権限（ディレクトリ755・ファイル644）なら�
 エージェントは1日1回、新しい版を確かめ、**当社の署名を検証できたときだけ**自分で更新します。配布元（GitHub）が乗っ取られても、署名の秘密鍵はGitHubとは別の場所で保管しているため、偽の版へは更新しません。
 
 - 止めるには、設定の `AUTO_UPDATE=false`、またはWebProxiedの画面で自動更新をオフにします。
-- 自動更新で置き換わるのは、実行ファイルだけです。systemd のサービスの設定（`/etc/systemd/system/webproxied-agent.service`）が変わった版では、導入のコマンドを実行し直すと反映されます。
+- 自動更新で置き換わるのは、実行ファイルだけです。systemd のサービスの設定（`/etc/systemd/system/webproxied-agent.service`）が変わった版では、導入のコマンドを実行し直すと反映されます（トークンを聞かれたら、何も入れずにEnterで、今のトークンを使い続けます）。
 - 手動で更新するには `sudo -u webproxied-agent /opt/webproxied-agent/webproxied-agent update` のあと、`sudo systemctl restart webproxied-agent`。
 
 ## 削除
