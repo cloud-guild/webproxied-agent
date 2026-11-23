@@ -48,6 +48,11 @@ curl -fsSL https://webproxied.com/agent/install.sh | sudo sh -s -- --api-url htt
 すべて読み取りだけで、実行するコマンドは決まったもの（シェルを通さず、`/usr/sbin` などの決まった場所から探す）だけです。時間と出力の量に上限を設けています。
 
 - **毎回（1分ごと）**：CPU（使用率・steal・iowait）・ロードアベレージ・メモリ・スワップ・ディスク（tmpfs・overlay・squashfsなどを除く）・スレッドの数と上限・時刻の同期（chronyc・timedatectl）・OOMの回数・稼働時間。
+- **毎回（1分ごと）**：インターフェースのIPアドレス（IPv4・IPv6。最大32件）。パブリック・プライベートの判断は、WebProxiedが行います。
+  - up のインターフェースだけです。ループバック・リンクローカル、IPv6の一時的・確認中・非推奨のアドレスは送りません。
+  - コンテナ・仮想ネットワーク・VPNのインターフェース（`docker*`・`br-*`・`veth*`・`virbr*`・`cni*`・`flannel*`・`cali*`・`vxlan*`・`tun*`・`tap*`・`wg*`・`kube-*`・`cilium*`・`lxc*`・`lxd*`・`podman*`・`weave*`・`dummy*`・`nerdctl*`・`tailscale*`・`zt*`）は送りません。
+  - サービスは netlink を使えない（`RestrictAddressFamilies`）ため、IPv4は `ioctl`（`SIOCGIFCONF`）と `/proc/net/route`、IPv6は `/proc/net/if_inet6` で読みます。
+  - EC2 のパブリックIPのように、NAT でサーバーの外で付くアドレスは、サーバーからは見えません。
 - ディスクは、`/home` が別のパーティションなら、その容量も送ります。
 - **WebProxiedの画面で指定したとき**：サービスの状態（`systemctl show`、最大20個）、アクセスログ（`/var/log/` の下だけ。前回から後に追記された行の件数と5xxの件数。ログの入れ替えにも対応）。
 - **起動の直後（最初の応答を受けた後）と、WebProxiedが求めたとき**：入っているパッケージ（dpkg・rpm・apk、最大2万件）・ミドルウェアの版（nginx・apache・php・mysql/mariadb・postgresql・redis・node）・サービスの一覧。
