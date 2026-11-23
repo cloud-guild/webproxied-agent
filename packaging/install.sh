@@ -2,6 +2,7 @@
 # WebProxied Agent の導入スクリプト（WebProxiedのサーバーの画面に表示されるコマンドで実行する）。
 #   curl -fsSL <WebProxiedのURL>/agent/install.sh | sudo sh -s -- --api-url <WebProxiedのURL>
 # トークンは、実行中に貼り付ける（コマンドの履歴・プロセスの一覧に残さないため）。自動の導入では、--token-file <ファイル> でも渡せる。
+# 入れ直しで、同じ --api-url のトークンが設定にあれば、何も入れずにEnterで、そのトークンを使い続ける（端末が無いときも、使い続ける）。
 # 実行ファイルは GitHub Releases から取得し、当社の署名（ed25519）を検証してから入れる（OpenSSL 3.0以降が必要）。
 # オプション:
 #   --read-logs            アクセスログ（5xxの割合）を読めるよう、エージェントのユーザーをログのグループ（adm）に加える
@@ -60,17 +61,46 @@ case "$(uname -m)" in
     *) fail "対応していないCPUです: $(uname -m)" ;;
 esac
 
+# 入れ直しのときは、今の設定のトークンを使い続けられる（トークンは一度しか表示されず、手元に残っていないため）。
+# 送り先が同じときだけ使う（別のWebProxiedへ、このトークンを送らない）。トークンは表示しない
+CURRENT_TOKEN=""
+TOKEN_REUSED=0
+if [ -r "$CONFIG_DIR/agent.conf" ]; then
+    CURRENT_API_URL="$(sed -n 's/^API_URL=//p' "$CONFIG_DIR/agent.conf" | tail -n 1 | tr -d " \"'\r")"
+    if [ "${CURRENT_API_URL%/}" = "${API_URL%/}" ]; then
+        CURRENT_TOKEN="$(sed -n 's/^TOKEN=//p' "$CONFIG_DIR/agent.conf" | tail -n 1 | tr -d " \"'\r")"
+        # 正しい形（wpa_ と英数字）でなければ使わない
+        case "$CURRENT_TOKEN" in
+            wpa_*) case "${CURRENT_TOKEN#wpa_}" in ""|*[!A-Za-z0-9]*) CURRENT_TOKEN="" ;; esac ;;
+            *) CURRENT_TOKEN="" ;;
+        esac
+    fi
+fi
+
 if [ -z "$TOKEN" ]; then
     # 端末の無い環境（cloud-init・SSM Run Command・Ansible・ptyの無いsudo）では、/dev/tty が読めても書き込めない
     if ! [ -r /dev/tty ] || ! ( : > /dev/tty ) 2>/dev/null; then
-        fail "端末が無いため、トークンを入力できません（--token-file <ファイル> でトークンを渡してください）"
+        [ -n "$CURRENT_TOKEN" ] || fail "端末が無いため、トークンを入力できません（--token-file <ファイル> でトークンを渡してください）"
+        echo "端末が無いため、今の設定のトークンを使い続けます（新しいトークンにするときは、--token-file <ファイル> で渡してください）"
+        TOKEN="$CURRENT_TOKEN"
+        TOKEN_REUSED=1
+    else
+        if [ -n "$CURRENT_TOKEN" ]; then
+            printf 'WebProxiedのサーバーの画面に表示されたトークンを貼り付けて、Enterを押してください（今のトークンを使い続けるときは、何も入れずにEnter）: ' > /dev/tty
+        else
+            printf 'WebProxiedのサーバーの画面に表示されたトークンを貼り付けて、Enterを押してください: ' > /dev/tty
+        fi
+        stty -echo < /dev/tty 2>/dev/null || true
+        IFS= read -r TOKEN < /dev/tty || true
+        stty echo < /dev/tty 2>/dev/null || true
+        echo > /dev/tty
+        TOKEN="$(printf '%s' "$TOKEN" | tr -d ' \r\n')"
+        if [ -z "$TOKEN" ] && [ -n "$CURRENT_TOKEN" ]; then
+            echo "今の設定のトークンを使い続けます"
+            TOKEN="$CURRENT_TOKEN"
+            TOKEN_REUSED=1
+        fi
     fi
-    printf 'WebProxiedのサーバーの画面に表示されたトークンを貼り付けて、Enterを押してください: ' > /dev/tty
-    stty -echo < /dev/tty 2>/dev/null || true
-    IFS= read -r TOKEN < /dev/tty || true
-    stty echo < /dev/tty 2>/dev/null || true
-    echo > /dev/tty
-    TOKEN="$(printf '%s' "$TOKEN" | tr -d ' \r\n')"
 fi
 case "$TOKEN" in wpa_*) ;; *) fail "トークンの形式が違います（wpa_ で始まります）" ;; esac
 
@@ -196,10 +226,15 @@ UNIT
 systemctl daemon-reload
 
 echo "WebProxiedへ接続できるか確かめています"
+SEND_ERROR="WebProxiedへ送れませんでした。トークンとネットワーク（${API_URL} への接続）を確認してください"
+if [ "$TOKEN_REUSED" = "1" ]; then
+    # 画面でトークンを作り直していると、今の設定のトークンは無効になっている
+    SEND_ERROR="${SEND_ERROR}（今の設定のトークンを使い続けました。画面でトークンを作り直した場合は、新しいトークンを貼り付けて、実行し直してください）"
+fi
 if command -v runuser >/dev/null 2>&1; then
-    runuser -u webproxied-agent -- "$PREFIX/webproxied-agent" once || fail "WebProxiedへ送れませんでした。トークンとネットワーク（${API_URL} への接続）を確認してください"
+    runuser -u webproxied-agent -- "$PREFIX/webproxied-agent" once || fail "$SEND_ERROR"
 else
-    su -s /bin/sh webproxied-agent -c "$PREFIX/webproxied-agent once" || fail "WebProxiedへ送れませんでした。トークンとネットワーク（${API_URL} への接続）を確認してください"
+    su -s /bin/sh webproxied-agent -c "$PREFIX/webproxied-agent once" || fail "$SEND_ERROR"
 fi
 
 # 入れ直し（トークンの作り直し・版の更新）でも、新しい設定と実行ファイルで動くよう、再起動する
