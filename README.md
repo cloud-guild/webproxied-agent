@@ -26,12 +26,22 @@ curl -fsSL https://webproxied.com/agent/install.sh | sudo sh -s -- --api-url htt
 
 ### 導入のオプション
 
-- `--read-logs`：アクセスログ（5xxの割合）を読めるよう、エージェントのユーザーを `adm` のグループに加えます（Debian・Ubuntuのnginx・apacheのログ）。
-  - `adm` のグループは、アクセスログのほか、syslog・auth.log・journal なども読めます。
-  - RHEL系の httpd のログ（`/var/log/httpd`）はrootだけが読めるため、このオプションでは読めません。
-  - 付けずに入れ直すと、前に `--read-logs` で加えていた場合だけ、グループから外します（手で加えたものは外しません）。
+- `--no-read-logs`：アクセスログの読み取りを足しません（下の「アクセスログの読み取り」）。入れ直しで付けると、前にこのスクリプトが足したものだけを外します。
+- `--read-logs`：既定と同じです（前の版のコマンドのために受け付けます）。
 - `--allow-insecure-http`：開発環境だけで使います。`--api-url` に `http://` を許します（トークンが暗号化されずに送られます）。
 - `--token-file <ファイル>`：端末の無い環境（cloud-init・SSM Run Command・Ansibleなど）では、トークンをファイルで渡します。
+
+### アクセスログの読み取り
+
+アクセスログ（5xxの割合）を読めるよう、導入スクリプトは、Webサーバーのログのディレクトリ（`/var/log/nginx`・`/var/log/apache2`・`/var/log/httpd` のうち、あるもの）に、エージェントのユーザーの読み取りだけを ACL で足します。
+
+- ディレクトリに読み取りと通過、中のファイルに読み取りを足します。ログを作り直したとき（logrotate）のファイルにも引き継ぐよう、デフォルトACL も付けます。
+- 書き込みや、ほかのログ（syslog・auth.log など）の読み取りは増えません。ファイルの権限（マスク）を超えて読めるようにはしません。
+- 足したディレクトリは、`agent.conf` の `LOG_ACL_DIRS` に記録します。入れ直し・削除のときは、記録したものだけを外します（管理者が足した ACL は触りません）。
+- ディレクトリが無いとき（DB・踏み台など）は、何も足しません。シンボリックリンクのディレクトリも触りません。
+- `setfacl` が無い、または ACL を使えないときは、何も足さずに案内します（`acl` のパッケージを入れてから、実行し直します）。
+- 前の版の `--read-logs` で `adm` のグループに加えていた場合は、ACL に置き換えて、`adm` から外します（`adm` は syslog・auth.log なども読めて広いため）。ACL を使えないときは、今の読み取りを残します。
+- 最後に、何を足したかを表示します。
 
 ## 集める情報
 
@@ -128,7 +138,17 @@ sudo systemctl restart webproxied-agent
 ## 削除
 
 ```sh
+curl -fsSL https://webproxied.com/agent/install.sh | sudo sh -s -- --uninstall
+```
+
+- サービスを止めて、`/opt/webproxied-agent`・`/etc/webproxied-agent`・サービスの定義・ユーザー `webproxied-agent` を消します。
+- ログのディレクトリ（`/var/log/nginx`・`apache2`・`httpd`）から、`webproxied-agent` の ACL（デフォルトACL も）を外します。ディレクトリや ACL が無くても止まりません。
+
+手で消すときは、次のとおりです（ACL の行は、ユーザーを消す前に実行します）。
+
+```sh
 sudo systemctl disable --now webproxied-agent
+for d in /var/log/nginx /var/log/apache2 /var/log/httpd; do [ -d "$d" ] && command -v setfacl >/dev/null && { sudo setfacl -R -P -x u:webproxied-agent "$d"; sudo setfacl -x d:u:webproxied-agent "$d"; } 2>/dev/null; done; true
 sudo rm -rf /opt/webproxied-agent /etc/webproxied-agent /etc/systemd/system/webproxied-agent.service
 sudo userdel webproxied-agent
 ```
