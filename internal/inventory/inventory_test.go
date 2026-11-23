@@ -130,6 +130,13 @@ func TestCollect(t *testing.T) {
 	if len(inv.Services) != 1 || inv.Services[0].Name != "nginx" || inv.CollectedAt.IsZero() {
 		t.Errorf("services: %+v", inv)
 	}
+	// sshd が入っていなければ installed だけ。Ubuntu は /run/reboot-required で調べる
+	if data, _ := json.Marshal(inv.SSH); string(data) != `{"installed":false}` {
+		t.Errorf("ssh: %s", data)
+	}
+	if data, _ := json.Marshal(inv.Reboot); string(data) != `{"required":false,"method":"reboot-required","packages":[]}` {
+		t.Errorf("reboot: %s", data)
+	}
 
 	// 実行するのは、決まったコマンドだけ
 	allowed := map[string]bool{"dpkg-query": true, "nginx": true, "php": true, "mysqld": true, "postgres": true, "redis-server": true, "node": true, "systemctl": true}
