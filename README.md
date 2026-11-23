@@ -42,6 +42,7 @@ curl -fsSL https://webproxied.com/agent/install.sh | sudo sh -s -- --api-url htt
 - **WebProxiedの画面で指定したとき**：サービスの状態（`systemctl show`、最大20個）、アクセスログ（`/var/log/` の下だけ。前回から後に追記された行の件数と5xxの件数。ログの入れ替えにも対応）。
 - **起動の直後（最初の応答を受けた後）と、WebProxiedが求めたとき**：入っているパッケージ（dpkg・rpm・apk、最大2万件）・ミドルウェアの版（nginx・apache・php・mysql/mariadb・postgresql・redis・node）・サービスの一覧。
   - WebProxiedの画面でアプリケーションのディレクトリを指定していれば、そのライブラリ・フレームワーク・CMSの版も送ります（下の「アプリケーションのライブラリ」）。
+  - SSHの設定（ログインに関わる4つ）と、再起動を待っている更新も送ります（下の「SSHの設定と再起動待ちの更新」）。
 
 ## アプリケーションのライブラリ
 
@@ -77,6 +78,44 @@ sudo setfacl -R -m u:webproxied-agent:rX wp-content/plugins wp-content/themes
 ```
 
 WordPress の標準の権限（ディレクトリ755・ファイル644）なら、これらは不要です。
+
+## SSHの設定と再起動待ちの更新
+
+### SSHの設定
+
+sshd の設定ファイル（`/etc/ssh/sshd_config` と、`Include` で読み込むファイル）を読み、次の4つの、実際に効いている値を送ります。`sshd -T` は使いません（root が要るため）。
+
+- `PermitRootLogin`・`PasswordAuthentication`・`KbdInteractiveAuthentication`（古い名前の `ChallengeResponseAuthentication` も同じ設定として読みます）・`UsePAM`
+- sshd と同じ順で読みます。最初に現れた値が勝ち、`Include` はその場所で展開します。どこにも書かれていなければ、OpenSSH の既定の値です。
+- `Match` の中の値は、別に送ります（特定のユーザー・接続元だけ許可している場合に気づけるよう）。`Match all` はすべての接続に効くため、その値を、効いている値とします。
+- Ubuntu 24.04・Debian 12・Rocky Linux 9・AlmaLinux 8・Amazon Linux 2023 で、`sshd -T` と同じ値になることを確かめています。
+- 読めないファイルがあれば、値を送らず、理由（`permission_denied:<ファイル>` など）を送ります。WebProxiedの画面では「確認できず」になります。
+- sshd が入っていなければ、そのことだけを送ります。
+- systemd のユニットなどで、sshd に `-f`・`-o` を渡して設定を変えている場合は、反映されません。
+
+#### RHEL系で読めるようにする（任意）
+
+RHEL・Rocky Linux・AlmaLinux・Amazon Linux では、`/etc/ssh/sshd_config` と `/etc/ssh/sshd_config.d/` が root だけ読める権限（0600・0700）のため、そのままでは「確認できず」になります。読めるようにするには、エージェントのユーザーに読み取りだけを足します（書き込みや、ほかのファイルの読み取りは増えません）。
+
+```sh
+sudo setfacl -m u:webproxied-agent:r /etc/ssh/sshd_config
+# RHEL 9・Amazon Linux 2023 など、sshd_config.d がある場合
+sudo setfacl -m u:webproxied-agent:rx /etc/ssh/sshd_config.d
+sudo setfacl -m u:webproxied-agent:r /etc/ssh/sshd_config.d/*.conf
+# すぐに画面へ反映する（サーバーの情報は、起動の後と、WebProxiedが求めたときに送るため）
+sudo systemctl restart webproxied-agent
+```
+
+- 導入スクリプトは、エージェントのユーザーが読めないときに、このサーバーに合わせたコマンドを表示します（権限は変えません）。
+
+- `openssh-server` を更新すると、権限が元に戻り、足した読み取りは消えます（Rocky Linux 9 で確かめました）。更新の後は、もう一度実行してください。読めなくなると、画面に「確認できず」と出るので気づけます。
+- 後から `sshd_config.d/` に足したファイルにも、同じように読み取りを足してください。
+
+### 再起動を待っている更新
+
+- Debian・Ubuntu：`/run/reboot-required` の有無と、`/run/reboot-required.pkgs` のパッケージの名前（最大100件）。
+- RHEL系・Amazon Linux：`dnf needs-restarting -r` と同じ考え方で、カーネル・glibc・systemd・openssl-libs などの中心のパッケージが、起動の後に入ったかを、`rpm` の入れた時刻と起動の時刻で比べます（`needs-restarting` は実行しません）。
+- Alpine Linux などは、対象外（`unsupported`）と送ります。
 
 ## 自動更新
 
