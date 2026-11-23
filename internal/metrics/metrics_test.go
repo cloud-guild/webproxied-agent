@@ -155,7 +155,7 @@ func TestDiskMounts(t *testing.T) {
 		`25 22 7:0 / /snap/core/1 ro - squashfs /dev/loop0 ro`,
 		`26 22 0:5 / /proc rw - proc proc rw`,
 		`27 22 8:1 /var/lib/docker /var/lib/docker rw - ext4 /dev/sda1 rw`,
-		// systemd の ProtectHome で /home の上に重なったもの
+		// tmpfs などが上に重なって隠れたもの（ProtectHome=yes のとき）
 		`28 23 0:21 /systemd/inaccessible/dir /home ro - tmpfs tmpfs rw`,
 	}, "\n")
 

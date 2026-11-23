@@ -41,17 +41,17 @@ func TestReport(t *testing.T) {
 func TestResponseWatchFields(t *testing.T) {
 	var absent, cleared, set Response
 	json.Unmarshal([]byte(`{"server_id":1}`), &absent)
-	json.Unmarshal([]byte(`{"watch_services":[],"access_logs":[]}`), &cleared)
-	json.Unmarshal([]byte(`{"inventory_due":true,"watch_services":["nginx"],"access_logs":[{"path":"/var/log/nginx/access.log","format":"combined"}]}`), &set)
+	json.Unmarshal([]byte(`{"watch_services":[],"access_logs":[],"app_directories":[]}`), &cleared)
+	json.Unmarshal([]byte(`{"inventory_due":true,"watch_services":["nginx"],"access_logs":[{"path":"/var/log/nginx/access.log","format":"combined"}],"app_directories":["/var/www/example/current"]}`), &set)
 
 	// 応答に無ければ今の指定のまま（nil）、空の配列なら監視をやめる
-	if absent.WatchServices != nil || absent.AccessLogs != nil || absent.InventoryDue {
+	if absent.WatchServices != nil || absent.AccessLogs != nil || absent.AppDirectories != nil || absent.InventoryDue {
 		t.Errorf("absent: %+v", absent)
 	}
-	if cleared.WatchServices == nil || len(cleared.WatchServices) != 0 || cleared.AccessLogs == nil {
+	if cleared.WatchServices == nil || len(cleared.WatchServices) != 0 || cleared.AccessLogs == nil || cleared.AppDirectories == nil {
 		t.Errorf("cleared: %+v", cleared)
 	}
-	if !set.InventoryDue || set.WatchServices[0] != "nginx" || set.AccessLogs[0].Format != "combined" {
+	if !set.InventoryDue || set.WatchServices[0] != "nginx" || set.AccessLogs[0].Format != "combined" || set.AppDirectories[0] != "/var/www/example/current" {
 		t.Errorf("set: %+v", set)
 	}
 }

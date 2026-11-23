@@ -30,6 +30,8 @@ type Response struct {
 	WatchServices []string `json:"watch_services"`
 	// AccessLogs は、5xxの割合を数えるアクセスログ。応答に無ければ今の指定のまま、空の配列なら数えるのをやめる。
 	AccessLogs []AccessLog `json:"access_logs"`
+	// AppDirectories は、ライブラリの版を読むアプリケーションのディレクトリ。応答に無ければ今の指定のまま、空の配列なら読むのをやめる。
+	AppDirectories []string `json:"app_directories"`
 }
 
 // AccessLog は、数えるアクセスログ（場所と形式）。
