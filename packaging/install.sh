@@ -4,10 +4,13 @@
 # トークンは、実行中に貼り付ける（コマンドの履歴・プロセスの一覧に残さないため）。自動の導入では、--token-file <ファイル> でも渡せる。
 # 入れ直しで、同じ --api-url のトークンが設定にあれば、何も入れずにEnterで、そのトークンを使い続ける（端末が無いときも、使い続ける）。
 # 実行ファイルは GitHub Releases から取得し、当社の署名（ed25519）を検証してから入れる（OpenSSL 3.0以降が必要）。
+# アクセスログ（5xxの割合）を読めるよう、Webサーバーのログのディレクトリ（/var/log/nginx・apache2・httpd のうち、あるもの）に、
+# エージェントのユーザーの読み取りだけを ACL で足す（ほかのログ・書き込みは増えない）。setfacl が無ければ、何も足さずに案内する。
 # オプション:
-#   --read-logs            アクセスログ（5xxの割合）を読めるよう、エージェントのユーザーをログのグループ（adm）に加える
-#                          （adm のグループは、syslog・auth.log・journal なども読める）
+#   --no-read-logs         アクセスログの読み取りを足さない（入れ直しでは、前にこのスクリプトが足したものだけ外す）
+#   --read-logs            既定と同じ（前の版のコマンドのために受け付ける）
 #   --allow-insecure-http  開発環境だけ。--api-url に http:// を許す（トークンが暗号化されずに送られる）
+#   --uninstall            エージェントを削除する（サービス・ファイル・ユーザーと、足したログの読み取り）
 set -eu
 
 # 途中までしか取得できなかったスクリプトを実行しないよう、全体を関数にして最後に呼ぶ
@@ -18,9 +21,13 @@ TOKEN=""
 VERSION="latest"
 SKIP_SIGNATURE=0
 ALLOW_INSECURE_HTTP=false
-READ_LOGS=0
+READ_LOGS=1
+UNINSTALL=0
 PREFIX="/opt/webproxied-agent"
 CONFIG_DIR="/etc/webproxied-agent"
+AGENT_USER="webproxied-agent"
+# 読み取りを足す、Webサーバーのログのディレクトリ（空白を含まない）
+LOG_DIRS="/var/log/nginx /var/log/apache2 /var/log/httpd"
 
 # 署名を検証する公開鍵（scripts/gen-key.sh の出力のPEM）。internal/update/keys/release.pub と同じ鍵。
 PUBLIC_KEY_PEM="-----BEGIN PUBLIC KEY-----
@@ -35,6 +42,8 @@ while [ $# -gt 0 ]; do
         --skip-signature-check) SKIP_SIGNATURE=1; shift ;;
         --allow-insecure-http) ALLOW_INSECURE_HTTP=true; shift ;;
         --read-logs) READ_LOGS=1; shift ;;
+        --no-read-logs) READ_LOGS=0; shift ;;
+        --uninstall) UNINSTALL=1; shift ;;
         *) echo "不明な引数: $1" >&2; exit 2 ;;
     esac
 done
@@ -42,6 +51,21 @@ done
 fail() { echo "エラー: $*" >&2; exit 1; }
 
 [ "$(id -u)" = "0" ] || fail "root（sudo）で実行してください"
+
+# 前にこのスクリプトが足したもの（入れ直し・削除のときに、それだけを外す）
+LOG_ACL_BEFORE=""
+READ_LOGS_BEFORE=0
+if [ -r "$CONFIG_DIR/agent.conf" ]; then
+    LOG_ACL_BEFORE="$(sed -n 's/^LOG_ACL_DIRS=//p' "$CONFIG_DIR/agent.conf" | tail -n 1 | tr -d "\"'\r")"
+    # 前の版の --read-logs は、adm のグループに加えていた
+    grep -qx 'READ_LOGS=true' "$CONFIG_DIR/agent.conf" && READ_LOGS_BEFORE=1
+fi
+
+if [ "$UNINSTALL" = "1" ]; then
+    uninstall
+    return 0
+fi
+
 [ -n "$API_URL" ] || fail "--api-url を指定してください"
 case "$API_URL" in
     https://*) ;;
@@ -146,29 +170,8 @@ if ! id webproxied-agent >/dev/null 2>&1; then
         || useradd -r -M -d "$PREFIX" -s /sbin/nologin -g webproxied-agent webproxied-agent
 fi
 
-# アクセスログを読むためのグループ（--read-logs を付けたときだけ加える）。
-# 付けずに入れ直したときは、前に --read-logs で加えていた場合だけ外す（管理者が手で加えたものは外さない）
-LOG_GROUP="adm"
-READ_LOGS_CONF=false
-READ_LOGS_BEFORE=0
-if [ -r "$CONFIG_DIR/agent.conf" ] && grep -qx 'READ_LOGS=true' "$CONFIG_DIR/agent.conf"; then
-    READ_LOGS_BEFORE=1
-fi
-if [ "$READ_LOGS" = "1" ]; then
-    READ_LOGS_CONF=true
-    if getent group "$LOG_GROUP" >/dev/null 2>&1; then
-        usermod -a -G "$LOG_GROUP" webproxied-agent
-        echo "アクセスログを読めるよう、webproxied-agent を ${LOG_GROUP} のグループに加えました（${LOG_GROUP} のグループは、syslog・auth.log・journal なども読めます）"
-    else
-        echo "注意: ${LOG_GROUP} のグループが無いため、グループに加えませんでした（ログのファイルの権限を確認してください）" >&2
-    fi
-    if [ -d /var/log/httpd ]; then
-        echo "注意: RHEL系の httpd のログ（/var/log/httpd）は、rootだけが読めるため、${LOG_GROUP} のグループでは読めません" >&2
-    fi
-elif [ "$READ_LOGS_BEFORE" = "1" ] && id -nG webproxied-agent 2>/dev/null | tr ' ' '\n' | grep -qx "$LOG_GROUP"; then
-    gpasswd -d webproxied-agent "$LOG_GROUP" >/dev/null
-    echo "--read-logs を付けていないため、webproxied-agent を ${LOG_GROUP} のグループから外しました"
-fi
+# アクセスログの読み取り（LOG_ACL_DIRS・READ_LOGS は、agent.conf に記録する）
+read_logs
 
 # 実行ファイルは、自動更新で置き換えられるよう、エージェントのユーザーが書ける場所に置く
 install -d -o webproxied-agent -g webproxied-agent -m 0755 "$PREFIX"
@@ -184,7 +187,9 @@ TOKEN=${TOKEN}
 INTERVAL_SECONDS=60
 AUTO_UPDATE=true
 ALLOW_INSECURE_HTTP=${ALLOW_INSECURE_HTTP}
-# --read-logs で ${LOG_GROUP} のグループに加えたか（入れ直しのときに使う）
+# アクセスログを読めるよう、このスクリプトが読み取りの ACL を足したディレクトリ（入れ直し・削除のときに、これだけを外す）
+LOG_ACL_DIRS=${LOG_ACL_DIRS}
+# 前の版の --read-logs で adm のグループに加えたままか（入れ直し・削除のときに使う）
 READ_LOGS=${READ_LOGS_CONF}
 CONF
 chgrp webproxied-agent "$CONFIG_DIR/agent.conf"
@@ -241,8 +246,128 @@ fi
 systemctl enable webproxied-agent >/dev/null 2>&1
 systemctl restart webproxied-agent
 echo "導入しました。WebProxiedのサーバーの画面で、接続できたことを確認してください。"
+echo "$LOG_SUMMARY"
 
 sshd_hint
+}
+
+# has_acl は、ディレクトリに、エージェントのユーザーの ACL（ふつう・デフォルト）があるか。
+has_acl() {
+    getfacl -p --omit-header "$1" 2>/dev/null | grep -q "^\(default:\)\{0,1\}user:${AGENT_USER}:"
+}
+
+# remove_acl は、ディレクトリ（と中のファイル）から、エージェントのユーザーの ACL を外す。無くても止まらない。
+# シンボリックリンクは辿らない（-P）
+remove_acl() {
+    [ -d "$1" ] || return 0
+    command -v setfacl >/dev/null 2>&1 || return 0
+    setfacl -R -P -x "u:${AGENT_USER}" "$1" 2>/dev/null || true
+    setfacl -x "d:u:${AGENT_USER}" "$1" 2>/dev/null || true
+}
+
+# add_acl は、ディレクトリに読み取りと通過、中のファイルに読み取り、新しいファイルに引き継ぐデフォルトACL を足す。
+# ファイルの読み取りは、ファイルの権限（マスク）を超えない。シンボリックリンクは辿らない（-P）
+add_acl() {
+    setfacl -m "u:${AGENT_USER}:rx" "$1" \
+        && setfacl -R -P -m "u:${AGENT_USER}:rX" "$1" \
+        && setfacl -d -m "u:${AGENT_USER}:r" "$1"
+}
+
+# in_list は、空白で区切った一覧に、その語があるか。
+in_list() {
+    case " $2 " in *" $1 "*) return 0 ;; esac
+    return 1
+}
+
+# read_logs は、アクセスログを読めるよう、Webサーバーのログのディレクトリに読み取りの ACL を足す。
+# 前にこのスクリプトが足したもの（LOG_ACL_BEFORE）でない、管理者が足した ACL は、触らない。
+# 結果を LOG_ACL_DIRS・READ_LOGS_CONF・LOG_SUMMARY に入れる。
+read_logs() {
+    LOG_ACL_DIRS=""
+    READ_LOGS_CONF=false
+    LOG_SUMMARY=""
+    NO_ACL=0
+    MANUAL=""
+
+    if [ "$READ_LOGS" = "1" ]; then
+        for d in $LOG_DIRS; do
+            # シンボリックリンクのディレクトリは、リンクの先を変えないよう、触らない
+            [ -d "$d" ] && ! [ -L "$d" ] || continue
+            if ! command -v setfacl >/dev/null 2>&1 || ! command -v getfacl >/dev/null 2>&1; then
+                NO_ACL=1
+                break
+            fi
+            if has_acl "$d" && ! in_list "$d" "$LOG_ACL_BEFORE"; then
+                # 管理者が足したもの
+                MANUAL="${MANUAL:+$MANUAL }$d"
+                continue
+            fi
+            if add_acl "$d" 2>/dev/null; then
+                LOG_ACL_DIRS="${LOG_ACL_DIRS:+$LOG_ACL_DIRS }$d"
+            else
+                # ACL が使えないファイルシステムなど。足しかけたものを戻す
+                remove_acl "$d"
+                NO_ACL=1
+            fi
+        done
+    fi
+
+    # 前に足して、今回は足さないもの（--no-read-logs・ディレクトリが消えた）を外す
+    for d in $LOG_ACL_BEFORE; do
+        in_list "$d" "$LOG_ACL_DIRS" || remove_acl "$d"
+    done
+
+    # 前の版の --read-logs で加えた adm のグループ（adm は syslog・auth.log なども読めて広いため、もう加えない）。
+    # ACL に置き換えたとき・--no-read-logs のときは外す。ACL を使えず、何も足せなかったときは、今の読み取りを残す
+    if [ "$READ_LOGS_BEFORE" = "1" ] && id -nG "$AGENT_USER" 2>/dev/null | tr ' ' '\n' | grep -qx adm; then
+        if [ "$READ_LOGS" = "0" ] || [ -n "$LOG_ACL_DIRS" ] || [ "$NO_ACL" = "0" ]; then
+            gpasswd -d "$AGENT_USER" adm >/dev/null
+            echo "前の版の --read-logs で加えた adm のグループから、${AGENT_USER} を外しました"
+        else
+            READ_LOGS_CONF=true
+        fi
+    fi
+
+    if [ "$READ_LOGS" = "0" ]; then
+        LOG_SUMMARY="アクセスログ: 読み取りを足していません（--no-read-logs）"
+    elif [ -n "$LOG_ACL_DIRS" ]; then
+        LOG_SUMMARY="アクセスログ: ${LOG_ACL_DIRS} に、読み取りだけを足しました（ACL）"
+    elif [ "$NO_ACL" = "0" ] && [ -z "$MANUAL" ]; then
+        LOG_SUMMARY="アクセスログ: Webサーバーのログのディレクトリが無いため、何も足していません"
+    fi
+    if [ -n "$MANUAL" ]; then
+        LOG_SUMMARY="${LOG_SUMMARY:+$LOG_SUMMARY
+}アクセスログ: ${MANUAL} は、すでに ${AGENT_USER} の ACL があるため、変えていません"
+    fi
+    if [ "$NO_ACL" = "1" ]; then
+        if [ "$READ_LOGS_CONF" = "true" ]; then
+            KEPT="（前の版で加えた adm のグループは残しています）"
+        else
+            KEPT=""
+        fi
+        LOG_SUMMARY="${LOG_SUMMARY:+$LOG_SUMMARY
+}アクセスログ: ACL を使えないため、一部またはすべてに読み取りを足していません${KEPT}。アクセスログの5xxの監視を使うには、acl のパッケージを入れてから、実行し直してください"
+    fi
+}
+
+# uninstall は、エージェントを削除する。ログのディレクトリからは、エージェントのユーザーの ACL を外す
+# （ユーザーを消すと、残った ACL は意味を持たないため、記録に無いものも外す）。
+uninstall() {
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl disable --now webproxied-agent >/dev/null 2>&1 || true
+    fi
+    for d in $LOG_DIRS $LOG_ACL_BEFORE; do
+        remove_acl "$d"
+    done
+    rm -rf "$PREFIX" "$CONFIG_DIR" /etc/systemd/system/webproxied-agent.service
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl daemon-reload || true
+    fi
+    if id "$AGENT_USER" >/dev/null 2>&1; then
+        userdel "$AGENT_USER" 2>/dev/null || true
+    fi
+    getent group "$AGENT_USER" >/dev/null 2>&1 && { groupdel "$AGENT_USER" 2>/dev/null || true; }
+    echo "削除しました（サービス・${PREFIX}・${CONFIG_DIR}・ユーザー ${AGENT_USER}・ログのディレクトリの読み取り）"
 }
 
 # sshd の設定を、エージェントのユーザーが読めないとき（RHEL系の既定の権限）に、読めるようにする手順を案内する。
