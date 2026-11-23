@@ -1,4 +1,4 @@
-// Package host は、サーバーの基本の情報（ホスト名・OS・カーネル・CPU・稼働時間）を集める。読み取りだけを行う。
+// Package host は、サーバーの基本の情報（ホスト名・OS・カーネル・CPU・稼働時間・IPアドレス）を集める。読み取りだけを行う。
 package host
 
 import (
@@ -19,6 +19,8 @@ type Info struct {
 	Arch          string `json:"arch"`
 	CPUs          int    `json:"cpus"`
 	UptimeSeconds int64  `json:"uptime_seconds"`
+	// IPAddresses は、インターフェースのIPアドレス（集められなければ、送らない）。
+	IPAddresses []IPAddress `json:"ip_addresses,omitempty"`
 }
 
 // Root は、/proc・/etcを読む場所（テストで差し替える）。
@@ -45,6 +47,8 @@ func Collect() Info {
 			info.UptimeSeconds = int64(seconds)
 		}
 	}
+
+	info.IPAddresses = CollectIPAddresses()
 
 	return info
 }
