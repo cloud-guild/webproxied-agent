@@ -1,27 +1,25 @@
 #!/bin/sh
 # WebProxied Agent の導入スクリプト（WebProxiedのサーバーの画面に表示されるコマンドで実行する）。
-#   curl -fsSL <WebProxiedのURL>/agent/install.sh | sudo sh -s -- --api-url <WebProxiedのURL>
+#   curl -fsSL https://webproxied.com/agent/install.sh | sudo sh
 # トークンは、実行中に貼り付ける（コマンドの履歴・プロセスの一覧に残さないため）。自動の導入では、--token-file <ファイル> でも渡せる。
-# 入れ直しで、同じ --api-url のトークンが設定にあれば、何も入れずにEnterで、そのトークンを使い続ける（端末が無いときも、使い続ける）。
-# 実行ファイルは GitHub Releases から取得し、当社の署名（ed25519）を検証してから入れる（OpenSSL 3.0以降が必要）。
+# 入れ直しで、同じ送り先のトークンが設定にあれば、何も入れずにEnterで、そのトークンを使い続ける（端末が無いときも、使い続ける）。
+# 実行ファイルは GitHub Releases から取得し、当社の署名（ed25519）を検証してから入れる（OpenSSL 3.0以降が必要。openssl・openssl3 を探す）。
 # アクセスログ（5xxの割合）を読めるよう、Webサーバーのログのディレクトリ（/var/log/nginx・apache2・httpd のうち、あるもの）に、
 # エージェントのユーザーの読み取りだけを ACL で足す（ほかのログ・書き込みは増えない）。setfacl が無ければ、何も足さずに案内する。
 # オプション:
-#   --no-read-logs         アクセスログの読み取りを足さない（入れ直しでは、前にこのスクリプトが足したものだけ外す）
-#   --read-logs            既定と同じ（前の版のコマンドのために受け付ける）
-#   --allow-insecure-http  開発環境だけ。--api-url に http:// を許す（トークンが暗号化されずに送られる）
-#   --uninstall            エージェントを削除する（サービス・ファイル・ユーザーと、足したログの読み取り）
+#   --api-url <URL>          送り先（既定は https://webproxied.com）。http:// は、開発環境（localhost・プライベートIP・.test など）だけ許す
+#   --token-file <ファイル>  トークンをファイルで渡す（端末の無い環境）
+#   --version <vX.Y.Z>       入れる版（既定は最新）
+#   --uninstall              エージェントを削除する（サービス・ファイル・ユーザーと、足したログの読み取り）
 set -eu
 
 # 途中までしか取得できなかったスクリプトを実行しないよう、全体を関数にして最後に呼ぶ
 main() {
 REPO="cloud-guild/webproxied-agent"
-API_URL=""
+API_URL="https://webproxied.com"
 TOKEN=""
 VERSION="latest"
-SKIP_SIGNATURE=0
 ALLOW_INSECURE_HTTP=false
-READ_LOGS=1
 UNINSTALL=0
 PREFIX="/opt/webproxied-agent"
 CONFIG_DIR="/etc/webproxied-agent"
@@ -39,10 +37,6 @@ while [ $# -gt 0 ]; do
         --token-file) TOKEN="$(tr -d ' \r\n' < "$2")"; shift 2 ;;
         --api-url) API_URL="$2"; shift 2 ;;
         --version) VERSION="$2"; shift 2 ;;
-        --skip-signature-check) SKIP_SIGNATURE=1; shift ;;
-        --allow-insecure-http) ALLOW_INSECURE_HTTP=true; shift ;;
-        --read-logs) READ_LOGS=1; shift ;;
-        --no-read-logs) READ_LOGS=0; shift ;;
         --uninstall) UNINSTALL=1; shift ;;
         *) echo "不明な引数: $1" >&2; exit 2 ;;
     esac
@@ -54,11 +48,8 @@ fail() { echo "エラー: $*" >&2; exit 1; }
 
 # 前にこのスクリプトが足したもの（入れ直し・削除のときに、それだけを外す）
 LOG_ACL_BEFORE=""
-READ_LOGS_BEFORE=0
 if [ -r "$CONFIG_DIR/agent.conf" ]; then
     LOG_ACL_BEFORE="$(sed -n 's/^LOG_ACL_DIRS=//p' "$CONFIG_DIR/agent.conf" | tail -n 1 | tr -d "\"'\r")"
-    # 前の版の --read-logs は、adm のグループに加えていた
-    grep -qx 'READ_LOGS=true' "$CONFIG_DIR/agent.conf" && READ_LOGS_BEFORE=1
 fi
 
 if [ "$UNINSTALL" = "1" ]; then
@@ -66,17 +57,28 @@ if [ "$UNINSTALL" = "1" ]; then
     return 0
 fi
 
-[ -n "$API_URL" ] || fail "--api-url を指定してください"
 case "$API_URL" in
     https://*) ;;
     http://*)
-        [ "$ALLOW_INSECURE_HTTP" = "true" ] || fail "--api-url は https:// で始まるURLにしてください（開発環境で http:// を使うときだけ、--allow-insecure-http を付けます）"
-        echo "注意: http:// で接続します（--allow-insecure-http）。トークンが暗号化されずに送られるため、開発環境だけで使ってください。" >&2
+        # http:// は、開発環境の送り先だけ許す（本番のURLを打ち間違えて、トークンを暗号化せずに送らないため）
+        dev_host "$API_URL" || fail "送り先（--api-url）は https:// で始まるURLにしてください（http:// は、localhost・プライベートIP・.test などの開発環境だけで使えます）"
+        ALLOW_INSECURE_HTTP=true
+        echo "注意: 開発環境として http:// で接続します。トークンが暗号化されずに送られます。" >&2
         ;;
-    *) fail "--api-url は https:// で始まるURLにしてください" ;;
+    *) fail "送り先（--api-url）は https:// で始まるURLにしてください" ;;
 esac
 command -v systemctl >/dev/null 2>&1 || fail "systemdが必要です"
 command -v curl >/dev/null 2>&1 || fail "curlが必要です"
+
+# 署名の検証（ed25519 の -rawin）には、OpenSSL 3.0以降が要る。RHEL系 8 は、EPEL の openssl3 を使える
+OPENSSL=""
+for c in openssl openssl3; do
+    if command -v "$c" >/dev/null 2>&1 && "$c" pkeyutl -help 2>&1 | grep -q -- '-rawin'; then
+        OPENSSL="$c"
+        break
+    fi
+done
+[ -n "$OPENSSL" ] || fail "署名の検証に、OpenSSL 3.0以降が必要です（このサーバー: $(openssl version 2>/dev/null || echo 'openssl が無い')）。RHEL系 8 では、EPEL の openssl3 を入れてから、実行し直してください（sudo dnf install epel-release && sudo dnf install openssl3）。"
 
 case "$(uname -s)" in Linux) ;; *) fail "Linuxだけに対応しています" ;; esac
 case "$(uname -m)" in
@@ -143,21 +145,11 @@ curl -fsSL --proto '=https' -o "$WORK/$ASSET" "$BASE/$ASSET"
 curl -fsSL --proto '=https' -o "$WORK/checksums.txt" "$BASE/checksums.txt"
 curl -fsSL --proto '=https' -o "$WORK/checksums.txt.sig" "$BASE/checksums.txt.sig"
 
-if [ "$SKIP_SIGNATURE" = "1" ]; then
-    echo "注意: 署名を検証しません（--skip-signature-check）。配布元が改ざんされていても気づけません。" >&2
-else
-    [ -n "$PUBLIC_KEY_PEM" ] || fail "署名を検証する公開鍵が設定されていません"
-    command -v openssl >/dev/null 2>&1 || fail "opensslが必要です（署名の検証）"
-    # ed25519の署名の検証（-rawin）は、OpenSSL 3.0以降で使える
-    if ! openssl pkeyutl -help 2>&1 | grep -q -- '-rawin'; then
-        fail "このサーバーのOpenSSL（$(openssl version)）では、署名を検証できません（OpenSSL 3.0以降が必要です）。OpenSSL 3.0以降のある別のマシンで checksums.txt の署名を検証したうえで、--skip-signature-check を付けて実行してください。"
-    fi
-    printf '%s\n' "$PUBLIC_KEY_PEM" > "$WORK/release.pub.pem"
-    if ! openssl pkeyutl -verify -pubin -inkey "$WORK/release.pub.pem" -rawin -in "$WORK/checksums.txt" -sigfile "$WORK/checksums.txt.sig" >/dev/null 2>&1; then
-        fail "署名を検証できませんでした。配布物が改ざんされている可能性があるため、導入を中止しました。WebProxiedのサポートへお問い合わせください。"
-    fi
-    echo "署名を検証しました"
+printf '%s\n' "$PUBLIC_KEY_PEM" > "$WORK/release.pub.pem"
+if ! "$OPENSSL" pkeyutl -verify -pubin -inkey "$WORK/release.pub.pem" -rawin -in "$WORK/checksums.txt" -sigfile "$WORK/checksums.txt.sig" >/dev/null 2>&1; then
+    fail "署名を検証できませんでした。配布物が改ざんされている可能性があるため、導入を中止しました。WebProxiedのサポートへお問い合わせください。"
 fi
+echo "署名を検証しました"
 
 EXPECTED="$(grep " ${ASSET}\$" "$WORK/checksums.txt" | awk '{print $1}')"
 ACTUAL="$(sha256sum "$WORK/$ASSET" | awk '{print $1}')"
@@ -170,7 +162,7 @@ if ! id webproxied-agent >/dev/null 2>&1; then
         || useradd -r -M -d "$PREFIX" -s /sbin/nologin -g webproxied-agent webproxied-agent
 fi
 
-# アクセスログの読み取り（LOG_ACL_DIRS・READ_LOGS は、agent.conf に記録する）
+# アクセスログの読み取り（足したディレクトリは、agent.conf の LOG_ACL_DIRS に記録する）
 read_logs
 
 # 実行ファイルは、自動更新で置き換えられるよう、エージェントのユーザーが書ける場所に置く
@@ -189,8 +181,6 @@ AUTO_UPDATE=true
 ALLOW_INSECURE_HTTP=${ALLOW_INSECURE_HTTP}
 # アクセスログを読めるよう、このスクリプトが読み取りの ACL を足したディレクトリ（入れ直し・削除のときに、これだけを外す）
 LOG_ACL_DIRS=${LOG_ACL_DIRS}
-# 前の版の --read-logs で adm のグループに加えたままか（入れ直し・削除のときに使う）
-READ_LOGS=${READ_LOGS_CONF}
 CONF
 chgrp webproxied-agent "$CONFIG_DIR/agent.conf"
 chmod 0640 "$CONFIG_DIR/agent.conf"
@@ -281,56 +271,40 @@ in_list() {
 
 # read_logs は、アクセスログを読めるよう、Webサーバーのログのディレクトリに読み取りの ACL を足す。
 # 前にこのスクリプトが足したもの（LOG_ACL_BEFORE）でない、管理者が足した ACL は、触らない。
-# 結果を LOG_ACL_DIRS・READ_LOGS_CONF・LOG_SUMMARY に入れる。
+# 結果を LOG_ACL_DIRS・LOG_SUMMARY に入れる。
 read_logs() {
     LOG_ACL_DIRS=""
-    READ_LOGS_CONF=false
     LOG_SUMMARY=""
     NO_ACL=0
     MANUAL=""
 
-    if [ "$READ_LOGS" = "1" ]; then
-        for d in $LOG_DIRS; do
-            # シンボリックリンクのディレクトリは、リンクの先を変えないよう、触らない
-            [ -d "$d" ] && ! [ -L "$d" ] || continue
-            if ! command -v setfacl >/dev/null 2>&1 || ! command -v getfacl >/dev/null 2>&1; then
-                NO_ACL=1
-                break
-            fi
-            if has_acl "$d" && ! in_list "$d" "$LOG_ACL_BEFORE"; then
-                # 管理者が足したもの
-                MANUAL="${MANUAL:+$MANUAL }$d"
-                continue
-            fi
-            if add_acl "$d" 2>/dev/null; then
-                LOG_ACL_DIRS="${LOG_ACL_DIRS:+$LOG_ACL_DIRS }$d"
-            else
-                # ACL が使えないファイルシステムなど。足しかけたものを戻す
-                remove_acl "$d"
-                NO_ACL=1
-            fi
-        done
-    fi
+    for d in $LOG_DIRS; do
+        # シンボリックリンクのディレクトリは、リンクの先を変えないよう、触らない
+        [ -d "$d" ] && ! [ -L "$d" ] || continue
+        if ! command -v setfacl >/dev/null 2>&1 || ! command -v getfacl >/dev/null 2>&1; then
+            NO_ACL=1
+            break
+        fi
+        if has_acl "$d" && ! in_list "$d" "$LOG_ACL_BEFORE"; then
+            # 管理者が足したもの
+            MANUAL="${MANUAL:+$MANUAL }$d"
+            continue
+        fi
+        if add_acl "$d" 2>/dev/null; then
+            LOG_ACL_DIRS="${LOG_ACL_DIRS:+$LOG_ACL_DIRS }$d"
+        else
+            # ACL が使えないファイルシステムなど。足しかけたものを戻す
+            remove_acl "$d"
+            NO_ACL=1
+        fi
+    done
 
-    # 前に足して、今回は足さないもの（--no-read-logs・ディレクトリが消えた）を外す
+    # 前に足して、今回は足さないもの（ディレクトリが消えた・ACL を使えなくなった）を外す
     for d in $LOG_ACL_BEFORE; do
         in_list "$d" "$LOG_ACL_DIRS" || remove_acl "$d"
     done
 
-    # 前の版の --read-logs で加えた adm のグループ（adm は syslog・auth.log なども読めて広いため、もう加えない）。
-    # ACL に置き換えたとき・--no-read-logs のときは外す。ACL を使えず、何も足せなかったときは、今の読み取りを残す
-    if [ "$READ_LOGS_BEFORE" = "1" ] && id -nG "$AGENT_USER" 2>/dev/null | tr ' ' '\n' | grep -qx adm; then
-        if [ "$READ_LOGS" = "0" ] || [ -n "$LOG_ACL_DIRS" ] || [ "$NO_ACL" = "0" ]; then
-            gpasswd -d "$AGENT_USER" adm >/dev/null
-            echo "前の版の --read-logs で加えた adm のグループから、${AGENT_USER} を外しました"
-        else
-            READ_LOGS_CONF=true
-        fi
-    fi
-
-    if [ "$READ_LOGS" = "0" ]; then
-        LOG_SUMMARY="アクセスログ: 読み取りを足していません（--no-read-logs）"
-    elif [ -n "$LOG_ACL_DIRS" ]; then
+    if [ -n "$LOG_ACL_DIRS" ]; then
         LOG_SUMMARY="アクセスログ: ${LOG_ACL_DIRS} に、読み取りだけを足しました（ACL）"
     elif [ "$NO_ACL" = "0" ] && [ -z "$MANUAL" ]; then
         LOG_SUMMARY="アクセスログ: Webサーバーのログのディレクトリが無いため、何も足していません"
@@ -340,14 +314,34 @@ read_logs() {
 }アクセスログ: ${MANUAL} は、すでに ${AGENT_USER} の ACL があるため、変えていません"
     fi
     if [ "$NO_ACL" = "1" ]; then
-        if [ "$READ_LOGS_CONF" = "true" ]; then
-            KEPT="（前の版で加えた adm のグループは残しています）"
-        else
-            KEPT=""
-        fi
         LOG_SUMMARY="${LOG_SUMMARY:+$LOG_SUMMARY
-}アクセスログ: ACL を使えないため、一部またはすべてに読み取りを足していません${KEPT}。アクセスログの5xxの監視を使うには、acl のパッケージを入れてから、実行し直してください"
+}アクセスログ: ACL を使えないため、一部またはすべてに読み取りを足していません。アクセスログの5xxの監視を使うには、acl のパッケージを入れてから、実行し直してください"
     fi
+}
+
+# dev_host は、URL の送り先が開発環境か（localhost・ループバック・プライベートIPv4・.localhost・.test・.internal）。
+dev_host() {
+    h="${1#*://}"
+    h="${h%%/*}"
+    h="${h%%\?*}"
+    h="${h%%#*}"
+    h="${h##*@}"
+    case "$h" in
+        \[*) h="${h#\[}"; h="${h%%]*}" ;;
+        *) h="${h%%:*}" ;;
+    esac
+    h="$(printf '%s' "$h" | tr 'A-Z' 'a-z')"
+    case "$h" in
+        localhost|*.localhost|*.test|*.internal|::1) return 0 ;;
+    esac
+    # 数字と点だけ（IPv4）のときだけ、アドレスの範囲で判断する（10.example.com などを許さない）
+    case "$h" in
+        ""|*[!0-9.]*) return 1 ;;
+    esac
+    case "$h" in
+        127.*|10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*) return 0 ;;
+    esac
+    return 1
 }
 
 # uninstall は、エージェントを削除する。ログのディレクトリからは、エージェントのユーザーの ACL を外す
